@@ -14,7 +14,7 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 
 from trading.config import get_settings
 from trading.logging_setup import get_logger
-from trading.schemas import IndexCandle, IndexTick, OptionTick
+from trading.schemas import IndexCandle, IndexTick, OptionGreeks, OptionTick
 
 log = get_logger(__name__)
 SCHEMA_FILE = Path(__file__).with_name("storage_schema.sql")
@@ -115,6 +115,20 @@ class LiveStore:
 
     def get_last_close_candle(self, index: str, timeframe: str) -> dict | None:
         raw = self.r.get(f"tpp:candle:last_close:{index}:{timeframe}")
+        return orjson.loads(raw) if raw else None
+
+    # ---- greeks helpers ----
+
+    def set_greeks(self, g: OptionGreeks) -> None:
+        key = (f"tpp:greeks:{g.index}:{g.expiry.isoformat()}:"
+               f"{g.strike}:{g.option_type}")
+        self.r.set(key, orjson.dumps(g.model_dump(mode="json")))
+
+    def get_greeks(
+        self, index: str, expiry: str, strike: int, option_type: str,
+    ) -> dict | None:
+        key = f"tpp:greeks:{index}:{expiry}:{strike}:{option_type}"
+        raw = self.r.get(key)
         return orjson.loads(raw) if raw else None
 
 

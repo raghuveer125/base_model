@@ -1,7 +1,7 @@
 # Trading Plug&Play
 
 Modular real-time options analytics engine for **Nifty50**, **BankNifty**, **Sensex** via Fyers.
-Phase 1 (data pipeline) and Phase 2 (candle engine) are complete; later phases add Greeks, strategies, and UI.
+Phases 1 (data pipeline), 2 (candles) and 3 (Greeks) are complete; later phases add strategies and UI.
 
 ## Design principles (non-negotiable)
 
@@ -42,6 +42,20 @@ Redis pub/sub: ticks.index.*
                        ├──► INSERT into index_candles (UPSERT on conflict)
                        ├──► publish candles.<IDX>.<TF>
                        └──► cache tpp:candle:last_close:<IDX>:<TF>
+
+Redis pub/sub: ticks.index.* + ticks.option.*
+                 │
+                 ▼
+            greeks.GreeksEngine (separate process)
+                 │
+                 ├──► on option tick → compute Greeks for that contract
+                 ├──► on index tick → throttled chain-wide recompute (spot move ≥ N pts)
+                 ├──► ATM ± range filter (per-index strike step)
+                 ├──► Black-Scholes with bucketized lru_cache (4K entries)
+                 │
+                 └──► emits:
+                       ├──► tpp:greeks:<IDX>:<EXPIRY>:<STRIKE>:<TYPE>
+                       └──► publish greeks.<IDX>
 ```
 
 ## Project layout
@@ -59,6 +73,7 @@ src/trading/
   adapter.py             normalize raw Fyers payloads into canonical models
   ingest.py              Orchestrator: WS → WAL → processors → Redis + PG + bus
   candles.py             CandleAggregator + CandleEngine (subscribes ticks.index.*)
+  greeks.py              Black-Scholes + GreeksEngine (subscribes ticks.*)
   metrics.py             in-process counters + Redis snapshot
   scripts/
     auth_bootstrap.py    `tpp-auth`
@@ -67,6 +82,7 @@ src/trading/
     run_retention.py     `tpp-retention`
     replay_wal.py        `tpp-replay-wal`
     run_candles.py       `tpp-candles`
+    run_greeks.py        `tpp-greeks`
 tests/
   test_adapter.py
   test_wal_and_ingest_helpers.py
@@ -104,10 +120,13 @@ tpp-ingest \
 # 6. Run candle engine in a separate shell (independent process)
 tpp-candles
 
-# 7. Daily maintenance
+# 7. Run Greeks engine in a separate shell (also independent)
+tpp-greeks
+
+# 8. Daily maintenance
 tpp-retention
 
-# 8. Replay from WAL (after outage / dry rebuild)
+# 9. Replay from WAL (after outage / dry rebuild)
 tpp-replay-wal --date 2026-04-19
 ```
 
@@ -124,6 +143,7 @@ tpp-replay-wal --date 2026-04-19
 | `tpp:token:fyers`                                | string | access-token JSON              |
 | `tpp:candle:in_progress:{INDEX}:{TF}`            | string | in-progress aggregator state   |
 | `tpp:candle:last_close:{INDEX}:{TF}`             | string | last closed `IndexCandle` JSON |
+| `tpp:greeks:{INDEX}:{EXPIRY}:{STRIKE}:{TYPE}`    | string | latest `OptionGreeks` JSON     |
 
 `{EXPIRY}` = ISO `YYYY-MM-DD`. `{TYPE}` = `CE` or `PE`.
 
@@ -166,6 +186,7 @@ The same snapshot is also logged at INFO every 5s as `metrics_snapshot` events.
 | `ticks.option.<IDX>`        | `OptionTick` JSON                     |
 | `option_chain.<IDX>`        | `OptionChainSnapshot` JSON (future)   |
 | `candles.<IDX>.<TF>`        | `IndexCandle` JSON on bucket close    |
+| `greeks.<IDX>`              | `OptionGreeks` JSON on recompute      |
 
 ## WAL format
 
@@ -213,9 +234,26 @@ and does **not** touch the ingestion pipeline. Core guarantees:
   or reconnects don't duplicate rows.
 - **Emits `candle_close`** as Redis pub/sub on `candles.<IDX>.<TF>` for downstream strategies.
 
+## Phase 3 — Greeks engine
+
+Independent process (`tpp-greeks`). Subscribes to `ticks.index.*` + `ticks.option.*`.
+Zero changes to ingest or candles.
+
+- **Black-Scholes** for Δ, Γ, Θ, ν. Inputs: current spot, strike, σ (from tick `iv`),
+  time-to-expiry, `RISK_FREE_RATE`. Output units: Θ per day, ν per 1 % σ.
+- **Trigger policy:** per-contract recompute on every option tick; chain-wide recompute
+  on index tick only when spot has moved ≥ `GREEKS_SPOT_TRIGGER_POINTS`.
+- **ATM filter:** `|strike − spot| ≤ ATM_STRIKE_WINDOW × strike_step` (per-index step).
+- **Caching:** BS pure-function `lru_cache` (4 096 entries) keyed on bucketed inputs —
+  spot→int, σ→basis points, T→minutes, r→basis points. Stable keys + high hit rate.
+- **TTE alignment:** time to expiry is computed against **15:30 IST** on the expiry date,
+  not 00:00 UTC — so 0 DTE ends exactly at market close.
+- **Degenerate inputs:** T ≤ 0 or σ = 0 → Δ is the intrinsic step, Γ/Θ/ν = 0.
+  Never NaN.
+- **Emits** `greeks.<IDX>` on each computation.
+
 ## What is not built yet
 
-- Greeks (Phase 3).
 - Strategy framework (Phase 5).
 - Web UI (Phase 6).
 

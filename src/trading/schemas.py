@@ -135,3 +135,33 @@ class IndexCandle(_Strict):
         if v not in Index._value2member_map_:
             raise ValueError(f"unknown index: {v}")
         return v
+
+
+class OptionGreeks(_Strict):
+    """Black-Scholes Greeks for a single option contract.
+
+    Sign conventions:
+      delta ∈ [0, 1] for CE, [-1, 0] for PE
+      gamma ≥ 0
+      theta usually ≤ 0 (per day, i.e. price decay)
+      vega  ≥ 0, per 1% absolute change in σ
+    """
+    index: Annotated[str, Field(min_length=1)]
+    strike: Annotated[int, Field(gt=0)]
+    option_type: OptionType
+    expiry: date
+    spot: Annotated[float, Field(gt=0)]
+    iv: float | None
+    time_to_expiry_years: Annotated[float, Field(ge=0)]
+    delta: float
+    gamma: float
+    theta: float    # per calendar day
+    vega: float     # per 1% σ
+    ts: Annotated[int, Field(ge=0)]
+
+    @field_validator("index")
+    @classmethod
+    def _valid_index(cls, v: str) -> str:
+        if v not in Index._value2member_map_:
+            raise ValueError(f"unknown index: {v}")
+        return v

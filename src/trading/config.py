@@ -61,6 +61,11 @@ class Settings(BaseSettings):
     ingest_queue_maxsize: int = 50_000
     dedup_cache_size: int = 200_000
 
+    # Greeks (Phase 3)
+    risk_free_rate: float = 0.065                   # India 10Y G-sec approx; per annum
+    greeks_spot_trigger_points: float = 2.0         # chain-wide recompute on spot move ≥ this
+    greeks_cache_maxsize: int = 4096
+
     @field_validator("wal_dir", "log_dir", mode="before")
     @classmethod
     def _coerce_path(cls, v: object) -> Path:

@@ -33,8 +33,13 @@ def ch_candle(index: str, timeframe: str) -> str:
     return f"candles.{index.upper()}.{timeframe}"
 
 
+def ch_greeks(index: str) -> str:
+    return f"greeks.{index.upper()}"
+
+
 ALL_INGEST_CHANNELS = ("ticks.index.*", "ticks.option.*", "option_chain.*")
 ALL_CANDLE_CHANNELS = ("candles.*",)
+ALL_GREEKS_CHANNELS = ("greeks.*",)
 
 
 class EventBus:
