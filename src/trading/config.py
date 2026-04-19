@@ -107,6 +107,13 @@ class Settings(BaseSettings):
     webhook_url: str = ""
     webhook_headers_json: str = ""          # e.g. '{"Authorization":"Bearer …"}'
 
+    # Orders (Phase 7 — paper first)
+    orders_mode: str = "paper"              # paper | live
+    paper_slippage_bps: float = 10.0
+    paper_fee_bps: float = 3.0
+    paper_flat_fee: float = 20.0
+    orders_default_qty: int = 1
+
     @property
     def strategy_list(self) -> list[str]:
         return [s.strip() for s in self.strategies_enabled.split(",") if s.strip()]

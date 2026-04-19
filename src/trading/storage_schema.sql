@@ -62,3 +62,43 @@ CREATE TABLE IF NOT EXISTS signals (
 
 CREATE INDEX IF NOT EXISTS ix_signals_strategy_ts ON signals (strategy, ts_ingest DESC);
 CREATE INDEX IF NOT EXISTS ix_signals_ts          ON signals (ts_ingest);
+
+
+CREATE TABLE IF NOT EXISTS orders (
+    id              BIGSERIAL PRIMARY KEY,
+    signal_ts       BIGINT      NOT NULL,
+    strategy        TEXT        NOT NULL,
+    index           TEXT        NOT NULL,
+    instrument      TEXT        NOT NULL,
+    action          TEXT        NOT NULL CHECK (action IN ('BUY','SELL','EXIT','HOLD')),
+    qty             INTEGER     NOT NULL,
+    ref_price       DOUBLE PRECISION NOT NULL,
+    status          TEXT        NOT NULL CHECK (status IN ('filled','rejected')),
+    reject_reason   TEXT        NOT NULL DEFAULT '',
+    signal_reason   TEXT        NOT NULL DEFAULT '',
+    signal_confidence DOUBLE PRECISION NOT NULL DEFAULT 0,
+    ordered_ts      BIGINT      NOT NULL,
+    ordered_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS ix_orders_strategy_ts ON orders (strategy, ordered_at DESC);
+CREATE INDEX IF NOT EXISTS ix_orders_ts          ON orders (ordered_at);
+
+
+CREATE TABLE IF NOT EXISTS fills (
+    id              BIGSERIAL PRIMARY KEY,
+    order_id        BIGINT      REFERENCES orders(id) ON DELETE SET NULL,
+    strategy        TEXT        NOT NULL,
+    index           TEXT        NOT NULL,
+    instrument      TEXT        NOT NULL,
+    side            CHAR(1)     NOT NULL CHECK (side IN ('B','S')),
+    qty             INTEGER     NOT NULL,
+    fill_price      DOUBLE PRECISION NOT NULL,
+    fees            DOUBLE PRECISION NOT NULL DEFAULT 0,
+    slippage_bps    DOUBLE PRECISION NOT NULL DEFAULT 0,
+    ts_ms           BIGINT      NOT NULL,
+    filled_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS ix_fills_strategy_ts ON fills (strategy, filled_at DESC);
+CREATE INDEX IF NOT EXISTS ix_fills_ts          ON fills (filled_at);

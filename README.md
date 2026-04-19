@@ -533,8 +533,69 @@ tpp-ui                         # http://127.0.0.1:8088
 tpp-ui --port 9000 --reload    # dev
 ```
 
+## Phase 7 — Order engine (paper-first)
+
+Independent process (`tpp-orders`). Subscribes `signals.*` and routes each
+admitted signal through an `Executor` → `PositionBook` → Postgres + pub/sub.
+Zero coupling to ingest/candles/greeks/strategies.
+
+```
+signals.* → OrderEngine
+               ├── resolve ref_price (metadata → Redis spot → option LTP)
+               ├── resolve qty        (metadata.qty → ORDERS_DEFAULT_QTY)
+               ├── EXIT → BUY/SELL    (based on current book direction)
+               ├── Executor.execute() → ExecutionResult(ok, fill, reason)
+               │     • PaperExecutor: slippage + fees, fully deterministic
+               │     • FyersExecutor: NotImplementedError (plumbing only)
+               ├── PositionBook.apply_fill()
+               │     • avg-cost accounting (long/short, flips, partial closes)
+               │     • realized PnL (fees always reduce)
+               │     • Redis-persisted: tpp:pos:{instrument}, tpp:pnl:realized
+               ├── Postgres INSERT into orders + fills
+               └── pub/sub: orders.<strat>, fills.<strat>, pnl.tick
+```
+
+### PaperExecutor math
+- **BUY**  fill = `ref_price × (1 + slippage_bps/10_000)`
+- **SELL** fill = `ref_price × (1 − slippage_bps/10_000)`
+- **Fee**   = `PAPER_FLAT_FEE + gross × PAPER_FEE_BPS/10_000`
+
+### PositionBook accounting
+- Same direction (open or add): `avg_price = weighted_avg(old, new)`
+- Opposite direction (reduce / flip): realize `(fill − avg) × closed` (or
+  `(avg − fill) × closed` when covering a short), then flip any residual
+  quantity to the new side at `fill_price`
+- Fees are deducted from realized on every fill (opening trades → negative
+  realized)
+- Restart-safe: `PositionBook()` hydrates from `tpp:pos:*` and
+  `tpp:pnl:realized` on construction
+
+### CLI
+
+```bash
+tpp-orders                                  # paper mode, env-configured
+tpp-orders --slippage-bps 5 --fee-bps 2     # override paper knobs
+tpp-orders --mode live                      # errors out (not implemented)
+```
+
+Published channels for the UI / downstream consumers:
+
+| pattern               | payload                                  |
+|-----------------------|------------------------------------------|
+| `orders.<STRATEGY>`   | `Order` JSON (filled or rejected)        |
+| `fills.<STRATEGY>`    | `Fill` JSON                              |
+| `pnl.tick`            | `{strategy, instrument, realized_session, delta_realized, position, ts}` |
+
+### Plugging in real Fyers later
+
+`orders/fyers.py` is a stub that raises `NotImplementedError`. When ready,
+implement `FyersExecutor.execute(order) → ExecutionResult` using the cached
+access token (same `tpp:token:fyers` used by ingest), then point the CLI at
+it via `ORDERS_MODE=live`. Everything downstream (book, PnL, pub/sub,
+persistence) stays identical.
+
 ## What is not built yet
 
-- Order execution (deliberately out of scope).
+- Live Fyers order placement (stub only — `FyersExecutor` raises).
 
 Each plugs into the existing `EventBus` without changes to earlier phases.

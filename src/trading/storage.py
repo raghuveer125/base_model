@@ -14,6 +14,7 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 
 from trading.config import get_settings
 from trading.logging_setup import get_logger
+from trading.orders.base import Fill, Order
 from trading.schemas import IndexCandle, IndexTick, OptionGreeks, OptionTick, Signal
 
 log = get_logger(__name__)
@@ -240,6 +241,41 @@ def insert_signals(rows: Sequence[Signal]) -> int:
     return len(rows)
 
 
+@retry(reraise=True, stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.2, max=2),
+       retry=retry_if_exception_type(psycopg.OperationalError))
+def insert_order(order: Order, *, status: str, reject_reason: str = "") -> int:
+    if status not in ("filled", "rejected"):
+        raise ValueError(f"bad status: {status}")
+    with get_pg_pool().connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO orders (signal_ts, strategy, index, instrument, action, qty, "
+            "ref_price, status, reject_reason, signal_reason, signal_confidence, ordered_ts) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+            (order.signal_ts, order.strategy, order.index, order.instrument,
+             order.action, order.qty, order.ref_price, status, reject_reason,
+             order.signal_reason, order.signal_confidence, order.ordered_ts),
+        )
+        row = cur.fetchone()
+        conn.commit()
+    return int(row[0]) if row else 0
+
+
+@retry(reraise=True, stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.2, max=2),
+       retry=retry_if_exception_type(psycopg.OperationalError))
+def insert_fill(fill: Fill) -> int:
+    with get_pg_pool().connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO fills (order_id, strategy, index, instrument, side, qty, "
+            "fill_price, fees, slippage_bps, ts_ms) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (fill.order_id, fill.strategy, fill.index, fill.instrument,
+             fill.side, fill.qty, fill.fill_price, fill.fees,
+             fill.slippage_bps, fill.ts_ms),
+        )
+        conn.commit()
+    return 1
+
+
 def enforce_retention(days: int | None = None) -> dict[str, int]:
     """Remove rows older than `days` days. Single-tenant; bounded to known tables."""
     d = days or get_settings().retention_days
@@ -251,6 +287,8 @@ def enforce_retention(days: int | None = None) -> dict[str, int]:
             ("option_chain_data", "ts"),
             ("index_candles", "open_ts"),
             ("signals", "ts_ingest"),
+            ("orders", "ordered_at"),
+            ("fills", "filled_at"),
         ):
             cur.execute(stmt.format(tbl=table, col=ts_col, n=d))
             purged[table] = cur.rowcount or 0

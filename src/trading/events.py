@@ -41,10 +41,22 @@ def ch_signal(strategy: str) -> str:
     return f"signals.{strategy}"
 
 
+def ch_order(strategy: str) -> str:
+    return f"orders.{strategy}"
+
+
+def ch_fill(strategy: str) -> str:
+    return f"fills.{strategy}"
+
+
+CH_PNL = "pnl.tick"
+
+
 ALL_INGEST_CHANNELS = ("ticks.index.*", "ticks.option.*", "option_chain.*")
 ALL_CANDLE_CHANNELS = ("candles.*",)
 ALL_GREEKS_CHANNELS = ("greeks.*",)
 ALL_SIGNAL_CHANNELS = ("signals.*",)
+ALL_ORDER_CHANNELS = ("orders.*", "fills.*", "pnl.*")
 
 
 class EventBus:
