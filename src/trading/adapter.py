@@ -192,23 +192,48 @@ def build_index_subscription(indices: Iterable[str]) -> list[str]:
     return out
 
 
+def _is_last_weekday_of_month(d: date) -> bool:
+    """True if `d` is the final occurrence of its weekday in its calendar month."""
+    cal = calendar.monthcalendar(d.year, d.month)
+    wd = d.weekday()
+    for week in reversed(cal):
+        if week[wd] != 0:
+            return week[wd] == d.day
+    return False
+
+
 def build_option_subscription(
     index: str, expiry: date, spot: float, window: int,
 ) -> list[str]:
+    """Build Fyers option subscription symbols for ATM ± window strikes.
+
+    Uses the monthly format (YY + MMM) when `expiry` is the last occurrence of
+    its weekday in the month, else the weekly format (YY + monthcode + DD).
+    Nifty / BankNifty weeklies were discontinued in late 2024, so operators
+    should pass the monthly expiry for those indices.
+    """
     root = INDEX_OPTION_ROOT[index]
     exch = "NSE" if index != Index.SENSEX.value else "BSE"
     yy = expiry.strftime("%y")
-    mon_num = expiry.month
-    if mon_num <= 9:
-        mon_code = str(mon_num)
-    elif mon_num == 10:
-        mon_code = "O"
-    elif mon_num == 11:
-        mon_code = "N"
+
+    if _is_last_weekday_of_month(expiry):
+        # Monthly format: e.g. NSE:NIFTY26APR25000CE
+        mon_abbr = expiry.strftime("%b").upper()
+        prefix = f"{exch}:{root}{yy}{mon_abbr}"
     else:
-        mon_code = "D"
-    dd = expiry.strftime("%d")
-    prefix = f"{exch}:{root}{yy}{mon_code}{dd}"
+        # Weekly format: e.g. NSE:NIFTY2642125000CE (YY + mcode + DD)
+        mon_num = expiry.month
+        if mon_num <= 9:
+            mon_code = str(mon_num)
+        elif mon_num == 10:
+            mon_code = "O"
+        elif mon_num == 11:
+            mon_code = "N"
+        else:
+            mon_code = "D"
+        dd = expiry.strftime("%d")
+        prefix = f"{exch}:{root}{yy}{mon_code}{dd}"
+
     symbols: list[str] = []
     for strike in atm_strikes(index, spot, window):
         for ot in ("CE", "PE"):

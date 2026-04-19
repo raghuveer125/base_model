@@ -192,6 +192,7 @@ class Orchestrator:
 
         self._ws: data_ws.FyersDataSocket | None = None
         self._stop = threading.Event()
+        self._ws_closed = threading.Event()
         self._subscribed: list[str] = []
         self._connected_once = False
 
@@ -236,6 +237,7 @@ class Orchestrator:
 
     def _on_close(self, message: Any) -> None:
         log.warning("ws_close", message=str(message))
+        self._ws_closed.set()
 
     def _on_error(self, message: Any) -> None:
         log.error("ws_error", message=str(message))
@@ -278,6 +280,7 @@ class Orchestrator:
     # ---- lifecycle ----
 
     def _connect_once(self, access_token: str) -> None:
+        self._ws_closed.clear()
         self._ws = data_ws.FyersDataSocket(
             access_token=access_token,
             log_path=str(self.settings.log_dir),
@@ -289,6 +292,8 @@ class Orchestrator:
             on_error=self._on_error,
             on_message=self._on_message,
         )
+        # connect() is non-blocking — it starts a background thread and returns.
+        # We sit on self._ws_closed.wait() in run() until on_close fires.
         self._ws.connect()
 
     def run(self) -> None:
@@ -299,15 +304,29 @@ class Orchestrator:
         while not self._stop.is_set():
             if self._connected_once:
                 metrics.incr_reconnect()
+            connected = False
             try:
                 token = ensure_access_token()
                 fyers_token = f"{self.settings.fyers_client_id}:{token}"
                 self._connect_once(fyers_token)
                 self._connected_once = True
+                connected = True
                 backoff = 1
-                log.warning("ws_disconnected_reconnecting")
             except Exception as e:  # noqa: BLE001
                 log.error("ws_connect_failed", error=str(e), backoff_s=backoff)
+
+            if connected:
+                # Block until the WS actually disconnects (on_close fires and sets
+                # the event) or the orchestrator is asked to stop. Without this
+                # wait we would spin-reconnect because FyersDataSocket.connect()
+                # returns immediately after spawning its background thread.
+                while not self._stop.is_set() and not self._ws_closed.is_set():
+                    if self._stop.wait(1.0):
+                        break
+                if self._stop.is_set():
+                    break
+                log.warning("ws_disconnected_reconnecting")
+
             sleep_s = min(backoff, self.settings.ws_reconnect_max_backoff_s)
             if self._stop.wait(sleep_s):
                 break
@@ -316,6 +335,7 @@ class Orchestrator:
     def shutdown(self) -> None:
         log.info("ingest_shutdown_begin")
         self._stop.set()
+        self._ws_closed.set()   # release the run-loop wait
         try:
             if self._ws is not None:
                 try:

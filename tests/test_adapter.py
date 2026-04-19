@@ -89,9 +89,20 @@ def test_normalize_returns_none_on_unknown_index():
     assert normalize_index_tick({"symbol": "NSE:MYSTERY-INDEX", "ltp": 1}) is None
 
 
-def test_build_option_subscription_emits_2n_plus_1_per_type():
-    syms = build_option_subscription("NIFTY50", date(2026, 4, 30), spot=25_012, window=2)
+def test_build_option_subscription_monthly_uses_mmm_format():
+    # 2026-04-30 is the last Thursday of April 2026 → monthly → YY+MMM.
+    syms = build_option_subscription("NIFTY50", date(2026, 4, 30),
+                                     spot=25_012, window=2)
     assert len(syms) == 10
-    assert all(s.startswith("NSE:NIFTY") for s in syms)
+    assert all(s.startswith("NSE:NIFTY26APR") for s in syms)
     assert sum(s.endswith("CE") for s in syms) == 5
     assert sum(s.endswith("PE") for s in syms) == 5
+
+
+def test_build_option_subscription_weekly_uses_mcode_dd_format():
+    # 2026-04-23 is a Thursday but NOT the last Thursday → weekly → YY+mcode+DD.
+    syms = build_option_subscription("NIFTY50", date(2026, 4, 23),
+                                     spot=25_012, window=1)
+    assert len(syms) == 6
+    # prefix should be NSE:NIFTY + 26 + 4 + 23
+    assert all(s.startswith("NSE:NIFTY26423") for s in syms)
