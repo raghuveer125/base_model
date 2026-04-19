@@ -444,6 +444,8 @@ no writes into the pipeline.
     alerts[], metrics}`. Checks: Redis ping, Postgres ping, WAL-dir writability,
     metrics freshness, latency p95, gap count, reconnect count; per-index
     staleness evaluated against market hours (IST)
+  - `POST /api/notifications/test` — fan-out a canned test payload to every
+    configured sink; useful for verifying Slack/SMTP/webhook connectivity
   - `GET /api/replays` — list replay run directories
   - `GET /api/replays/{run_id}/{summary,manifest,signals}` — per-run artifacts
     (run_id is validated; path traversal impossible)
@@ -482,6 +484,27 @@ no writes into the pipeline.
     metrics freshness, latency p95, gaps, reconnects). Active-alerts feed
     (severity + detail + since). Per-index staleness bar (age since last tick,
     gated by market hours). Thresholds configurable via `HEALTH_*` env vars.
+
+### Alert notifications (Slack / Email / Webhook)
+
+When `NOTIFY_ENABLED=true`, the UI spawns a background thread that polls
+`evaluate_health()` every `NOTIFY_POLL_SECONDS` and dispatches active alerts
+≥ `NOTIFY_MIN_SEVERITY` to all configured sinks. Sinks are independent — any
+combination of:
+
+| env group         | activates sink                                                 |
+|-------------------|----------------------------------------------------------------|
+| `SLACK_WEBHOOK_URL` | Incoming-webhook POST with a markdown-formatted message     |
+| `SMTP_HOST` + `SMTP_FROM` + `SMTP_TO` | STARTTLS SMTP send (auth if username set) |
+| `WEBHOOK_URL`     | Generic JSON POST `{subject, rule, severity, detail, status, ts_ms}`; optional auth headers via `WEBHOOK_HEADERS_JSON` |
+
+**Dedup:** per-rule cooldown via Redis `tpp:alert:last_fired:{rule}` (default
+10 min). An alert re-fires only after its cooldown; a rule that clears triggers
+a one-shot `[RESOLVED]` notification.
+
+**Manual test:** `curl -X POST http://127.0.0.1:8088/api/notifications/test`
+fan-outs a canned payload — handy for verifying Slack/SMTP/webhook connectivity
+before production.
   - **Replay** — full run browser: run picker on the left; run detail on the
     right with manifest, summary cards, per-strategy/action/timeframe breakdowns,
     and the full signal timeline. Color-coded by action (BUY/SELL/HOLD/EXIT).

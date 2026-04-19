@@ -38,6 +38,13 @@ def health() -> dict:
     return evaluate_health()
 
 
+@router.post("/notifications/test")
+def notifications_test() -> dict:
+    """Dispatch a canned test payload to every configured notification sink."""
+    from trading.ui.notifier import AlertNotifier
+    return AlertNotifier().tick_test()
+
+
 @router.get("/indices")
 def indices() -> list[str]:
     return get_settings().index_list

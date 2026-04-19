@@ -88,6 +88,24 @@ class Settings(BaseSettings):
     health_warn_staleness_s: int = 15
     health_crit_staleness_s: int = 60
 
+    # Notifications (Slack / Email / Webhook)
+    notify_enabled: bool = False
+    notify_min_severity: str = "crit"       # "warn" | "crit"
+    notify_dedup_seconds: int = 600
+    notify_poll_seconds: int = 30
+
+    slack_webhook_url: str = ""
+
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    smtp_to: str = ""                       # csv of recipients
+
+    webhook_url: str = ""
+    webhook_headers_json: str = ""          # e.g. '{"Authorization":"Bearer …"}'
+
     @property
     def strategy_list(self) -> list[str]:
         return [s.strip() for s in self.strategies_enabled.split(",") if s.strip()]
