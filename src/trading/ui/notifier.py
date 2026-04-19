@@ -21,6 +21,7 @@ from email.message import EmailMessage
 from typing import Callable, Protocol
 
 import httpx
+import orjson
 
 from trading.config import get_settings
 from trading.logging_setup import get_logger
@@ -30,6 +31,7 @@ from trading.ui.health import evaluate_health
 log = get_logger(__name__)
 
 SEVERITY_RANK = {"info": 0, "warn": 1, "crit": 2}
+_HISTORY_KEY = "tpp:alert:history"
 
 
 class Sink(Protocol):
@@ -180,10 +182,6 @@ class AlertNotifier:
         sinks = self.sinks_builder()
         report = self.evaluator()
 
-        if not sinks:
-            return {"dispatched": 0, "skipped": 0, "resolved": 0,
-                    "no_sinks": True, "active": 0}
-
         eligible = [
             a for a in (report.get("alerts") or [])
             if SEVERITY_RANK.get(a.get("severity"), 0) >= min_rank
@@ -195,6 +193,7 @@ class AlertNotifier:
         cd_ms = s.notify_dedup_seconds * 1000
 
         dispatched = 0
+        failed_delivery = 0
         skipped = 0
         for a in eligible:
             key = _last_fired_key(a["rule"])
@@ -212,20 +211,34 @@ class AlertNotifier:
             }
             subject = (f"[{a['severity'].upper()}] {a['rule']} "
                        f"({report.get('status', 'unknown')})")
-            if _fanout(sinks, subject, payload):
-                r.set(key, now_ms, ex=max(s.notify_dedup_seconds * 2, 60))
-                r.delete(_resolved_key(a["rule"]))
+            delivered = _fanout(sinks, subject, payload) if sinks else False
+            # Always mark the fire transition so dedup engages; a failing sink
+            # does not retry, but the active-alerts view still surfaces it.
+            r.set(key, now_ms, ex=max(s.notify_dedup_seconds * 2, 60))
+            r.delete(_resolved_key(a["rule"]))
+            _push_history(r, {
+                "kind": "fired",
+                "subject": subject,
+                **payload,
+                "delivered": delivered,
+                "sink_count": len(sinks),
+            }, max_entries=s.notify_history_max)
+            if delivered:
                 dispatched += 1
             else:
-                skipped += 1
+                failed_delivery += 1
 
         resolved = _emit_resolutions(
-            r, eligible_rules, sinks, report.get("status"), now_ms,
+            r, eligible_rules, sinks,
+            report.get("status"), now_ms,
+            max_entries=s.notify_history_max,
         )
 
         return {
-            "dispatched": dispatched, "skipped": skipped, "resolved": resolved,
-            "no_sinks": False, "active": len(eligible),
+            "dispatched": dispatched, "skipped": skipped,
+            "failed_delivery": failed_delivery,
+            "resolved": resolved,
+            "no_sinks": not sinks, "active": len(eligible),
         }
 
     def tick_test(self) -> dict:
@@ -273,7 +286,7 @@ def _fanout(sinks: list[Sink], subject: str, payload: dict) -> bool:
 
 def _emit_resolutions(
     r, eligible_rules: set[str], sinks: list[Sink],
-    status: str | None, now_ms: int,
+    status: str | None, now_ms: int, *, max_entries: int,
 ) -> int:
     sent = 0
     cursor = 0
@@ -293,10 +306,45 @@ def _emit_resolutions(
                 "status": status, "ts_ms": now_ms,
             }
             subject = f"[RESOLVED] {rule}"
-            if _fanout(sinks, subject, payload):
-                r.set(resolved_marker, 1, ex=3600)
-                r.delete(key_s)
+            delivered = _fanout(sinks, subject, payload) if sinks else False
+            # Mark as resolved regardless of delivery so we don't spam the log.
+            r.set(resolved_marker, 1, ex=3600)
+            r.delete(key_s)
+            _push_history(r, {
+                "kind": "resolved",
+                "subject": subject,
+                **payload,
+                "delivered": delivered,
+                "sink_count": len(sinks),
+            }, max_entries=max_entries)
+            if delivered:
                 sent += 1
         if cursor == 0:
             break
     return sent
+
+
+def _push_history(r, entry: dict, *, max_entries: int) -> None:
+    try:
+        r.lpush(_HISTORY_KEY, orjson.dumps(entry))
+        if max_entries > 0:
+            r.ltrim(_HISTORY_KEY, 0, max_entries - 1)
+    except Exception as e:  # noqa: BLE001
+        log.warning("history_push_failed", error=str(e))
+
+
+def read_history(limit: int = 50) -> list[dict]:
+    """Return newest-first alert history entries (capped at `limit`)."""
+    try:
+        r = get_redis()
+        raw = r.lrange(_HISTORY_KEY, 0, max(0, limit - 1))
+    except Exception as e:  # noqa: BLE001
+        log.warning("history_read_failed", error=str(e))
+        return []
+    out: list[dict] = []
+    for b in raw or []:
+        try:
+            out.append(orjson.loads(b))
+        except Exception:  # noqa: BLE001
+            continue
+    return out

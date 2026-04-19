@@ -505,6 +505,21 @@ a one-shot `[RESOLVED]` notification.
 **Manual test:** `curl -X POST http://127.0.0.1:8088/api/notifications/test`
 fan-outs a canned payload — handy for verifying Slack/SMTP/webhook connectivity
 before production.
+
+**Alert history** — every fire/resolve decision is persisted to Redis list
+`tpp:alert:history` (LPUSH + LTRIM to `NOTIFY_HISTORY_MAX`, default 200).
+`GET /api/notifications/history?limit=50` returns newest-first entries:
+
+```json
+{"kind":"fired","rule":"postgres","severity":"crit","detail":"down",
+ "status":"down","ts_ms":1729300000000,"delivered":true,"sink_count":2,
+ "subject":"[CRIT] postgres (down)"}
+```
+
+The Health tab auto-renders this list in a "Recent alerts" section alongside
+the live checks. Delivery failures still record a history entry with
+`delivered: false` — so if your sinks break, you can still see what would
+have fired.
   - **Replay** — full run browser: run picker on the left; run detail on the
     right with manifest, summary cards, per-strategy/action/timeframe breakdowns,
     and the full signal timeline. Color-coded by action (BUY/SELL/HOLD/EXIT).

@@ -45,6 +45,19 @@ def notifications_test() -> dict:
     return AlertNotifier().tick_test()
 
 
+@router.get("/notifications/history")
+def notifications_history(limit: int = Query(50, ge=1, le=1000)) -> list[dict]:
+    """Recent alert history (fire + resolve events), newest first.
+
+    Bounded server-side at NOTIFY_HISTORY_MAX; `limit` further caps per request.
+    Each entry:
+      {kind: "fired"|"resolved", subject, rule, severity, detail,
+       status, ts_ms, delivered, sink_count}
+    """
+    from trading.ui.notifier import read_history
+    return read_history(limit)
+
+
 @router.get("/indices")
 def indices() -> list[str]:
     return get_settings().index_list

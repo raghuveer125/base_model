@@ -185,3 +185,32 @@ def test_replays_rejects_unsafe_run_id(client):
     r = client.get("/api/replays/..%2Fetc/summary")
     # either 400 (caught by guard) or 404 (url decoded to something not found) — both safe
     assert r.status_code in (400, 404)
+
+
+def test_notifications_history_endpoint(client, monkeypatch):
+    from trading import storage as _storage
+    import orjson
+    fake = _storage.get_redis()
+    # seed two history entries directly (as the notifier would)
+    fake.lpush("tpp:alert:history", orjson.dumps({
+        "kind": "fired", "rule": "redis", "severity": "crit",
+        "detail": "down", "status": "down", "ts_ms": 1_000,
+        "delivered": True, "sink_count": 1, "subject": "[CRIT] redis (down)",
+    }))
+    fake.lpush("tpp:alert:history", orjson.dumps({
+        "kind": "resolved", "rule": "redis", "severity": "resolved",
+        "detail": "redis cleared", "status": "healthy", "ts_ms": 1_500,
+        "delivered": True, "sink_count": 1, "subject": "[RESOLVED] redis",
+    }))
+    r = client.get("/api/notifications/history?limit=10")
+    assert r.status_code == 200
+    body = r.json()
+    # newest (LPUSH) first
+    assert body[0]["kind"] == "resolved"
+    assert body[1]["kind"] == "fired"
+
+
+def test_notifications_history_defaults_empty(client):
+    r = client.get("/api/notifications/history")
+    assert r.status_code == 200
+    assert r.json() == []

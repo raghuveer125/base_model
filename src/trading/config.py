@@ -93,6 +93,7 @@ class Settings(BaseSettings):
     notify_min_severity: str = "crit"       # "warn" | "crit"
     notify_dedup_seconds: int = 600
     notify_poll_seconds: int = 30
+    notify_history_max: int = 200           # cap on tpp:alert:history list length
 
     slack_webhook_url: str = ""
 

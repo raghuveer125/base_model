@@ -182,7 +182,7 @@ def test_resolution_notification_when_alert_clears(monkeypatch, redis_stub):
     assert len(sink.sent) == 2
 
 
-def test_failed_sink_keeps_rule_unfired(monkeypatch, redis_stub):
+def test_failed_sink_marks_fired_but_not_delivered(monkeypatch, redis_stub):
     _notify_settings(monkeypatch)
     sink = StubSink(ok=False)
     notifier = AlertNotifier(
@@ -192,9 +192,76 @@ def test_failed_sink_keeps_rule_unfired(monkeypatch, redis_stub):
     )
     out = notifier.tick()
     assert out["dispatched"] == 0
-    assert out["skipped"] == 1
+    assert out["failed_delivery"] == 1
+    # dedup engages even on failure — next tick within cooldown is skipped
     out2 = notifier.tick()
     assert out2["skipped"] == 1
+    # history captured the undelivered fire
+    hist = redis_stub.lrange("tpp:alert:history", 0, -1)
+    assert len(hist) == 1
+
+
+def test_history_trimmed_to_max(monkeypatch, redis_stub):
+    _notify_settings(monkeypatch, NOTIFY_HISTORY_MAX="3", NOTIFY_DEDUP_SECONDS="1")
+    sink = StubSink()
+    clock_val = {"t": 1_000.0}
+    notifier = AlertNotifier(
+        evaluator=_evaluator_with({"rule": "redis", "severity": "crit", "detail": "x"}),
+        sinks_builder=lambda: [sink],
+        clock=lambda: clock_val["t"],
+    )
+    # Fire 5 times, each past cooldown → 5 history entries written, list capped at 3
+    for i in range(5):
+        notifier.tick()
+        clock_val["t"] += 2.0
+    assert redis_stub.llen("tpp:alert:history") == 3
+
+
+def test_read_history_returns_newest_first(monkeypatch, redis_stub):
+    _notify_settings(monkeypatch, NOTIFY_DEDUP_SECONDS="1")
+    sink = StubSink()
+    clock_val = {"t": 1_000.0}
+    notifier = AlertNotifier(
+        evaluator=_evaluator_with({"rule": "redis", "severity": "crit", "detail": "x"}),
+        sinks_builder=lambda: [sink],
+        clock=lambda: clock_val["t"],
+    )
+    notifier.tick()
+    clock_val["t"] += 2.0
+    notifier.tick()
+
+    from trading.ui.notifier import read_history
+    entries = read_history(10)
+    assert len(entries) == 2
+    assert entries[0]["ts_ms"] >= entries[1]["ts_ms"]
+    assert all(e["kind"] == "fired" for e in entries)
+    assert all(e["delivered"] is True for e in entries)
+
+
+def test_resolution_appears_in_history(monkeypatch, redis_stub):
+    _notify_settings(monkeypatch)
+    sink = StubSink()
+    clock_val = {"t": 1_000.0}
+    alerts_var = {"a": [{"rule": "redis", "severity": "crit", "detail": "down"}]}
+
+    def _ev():
+        return {"status": "degraded" if alerts_var["a"] else "healthy",
+                "alerts": list(alerts_var["a"])}
+
+    notifier = AlertNotifier(
+        evaluator=_ev, sinks_builder=lambda: [sink],
+        clock=lambda: clock_val["t"],
+    )
+    notifier.tick()
+    alerts_var["a"] = []
+    clock_val["t"] = 1_100.0
+    notifier.tick()
+
+    from trading.ui.notifier import read_history
+    entries = read_history(10)
+    kinds = [e["kind"] for e in entries]
+    # Newest-first: resolved entry came after fired entry
+    assert kinds == ["resolved", "fired"]
 
 
 def test_tick_test_sends_to_all_sinks(monkeypatch, redis_stub):

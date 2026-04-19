@@ -298,3 +298,26 @@ ul.indices li.idle .badge { background: var(--border); color: var(--muted); }
 .feed li.alert.crit { color: var(--red); font-weight: 600; }
 .feed li.alert .rule { font-weight: 700; }
 .feed li.alert .when { color: var(--muted); font-size: 0.72rem; }
+
+#health-history-section { margin-top: 1rem; background: var(--panel);
+  border: 1px solid var(--border); border-radius: 8px; padding: 0.75rem 1rem; }
+#health-history-section h2 { font-size: 0.78rem; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--muted); margin: 0; }
+.feed.history li {
+  display: grid;
+  grid-template-columns: 3.5rem auto 1fr auto auto;
+  gap: 0.6rem;
+  align-items: baseline;
+}
+.feed.history li .kind { font-weight: 700; font-size: 0.72rem; text-transform: uppercase;
+  letter-spacing: 0.04em; }
+.feed.history li .rule { font-weight: 700; }
+.feed.history li .detail { color: var(--muted); }
+.feed.history li .when { color: var(--muted); font-size: 0.72rem; }
+.feed.history li .delivery { font-size: 0.72rem; padding: 0.05rem 0.35rem;
+  border-radius: 4px; text-transform: uppercase; letter-spacing: 0.04em; }
+.feed.history li .delivery.sent { background: #3fb95033; color: var(--green); }
+.feed.history li .delivery.failed { background: #f8514933; color: var(--red); }
+.feed.history li.fired.crit    { color: var(--red); }
+.feed.history li.fired.warn    { color: #f0b429; }
+.feed.history li.resolved      { color: var(--green); }

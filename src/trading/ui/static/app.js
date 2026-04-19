@@ -398,14 +398,18 @@
   // ----- health view -----
 
   async function refreshHealth() {
-    let h;
+    let h, hist;
     try {
-      h = await fetch("/api/health").then((r) => r.json());
+      [h, hist] = await Promise.all([
+        fetch("/api/health").then((r) => r.json()),
+        fetch("/api/notifications/history?limit=50").then((r) => r.json()).catch(() => []),
+      ]);
     } catch (e) {
       setHealthBanner("down");
       $("health-updated").textContent = "error loading /api/health";
       return;
     }
+    renderHealthHistory(hist || []);
     setHealthBanner(h.status || "down");
     $("health-updated").textContent =
       `updated ${fmtTime(h.generated_ms)}` +
@@ -474,6 +478,36 @@
   function startHealthPolling() {
     refreshHealth();
     state.healthTimer = setInterval(refreshHealth, 5000);
+  }
+
+  function renderHealthHistory(entries) {
+    const ul = $("health-history");
+    ul.innerHTML = "";
+    $("history-count").textContent = entries.length
+      ? `${entries.length} entr${entries.length === 1 ? "y" : "ies"}`
+      : "no history yet";
+    if (!entries.length) {
+      ul.innerHTML = `<li class="muted">no alerts recorded</li>`;
+      return;
+    }
+    for (const e of entries) {
+      const li = document.createElement("li");
+      const cls = e.kind === "resolved"
+        ? "resolved"
+        : `fired ${e.severity || ""}`;
+      li.className = cls;
+      const when = e.ts_ms ? fmtTime(e.ts_ms) : "";
+      const sev = (e.severity || "").toUpperCase();
+      const delivery = e.delivered ? "sent" : "failed";
+      li.innerHTML = `
+        <span class="kind">${e.kind}${sev ? " · " + sev : ""}</span>
+        <span class="rule">${escapeHtml(e.rule || "")}</span>
+        <span class="detail">${escapeHtml(e.detail || "")}</span>
+        <span class="delivery ${delivery}">${delivery}</span>
+        <span class="when">${when}</span>
+      `;
+      ul.appendChild(li);
+    }
   }
 
   // ----- replay view -----
