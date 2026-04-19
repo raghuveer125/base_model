@@ -445,15 +445,23 @@ no writes into the pipeline.
   - `WebSocket /ws/{index}` — psubscribes Redis to `ticks.index.{IDX}`,
     `ticks.option.{IDX}`, `candles.{IDX}.*`, `greeks.{IDX}`, `signals.*` and
     forwards each message as `{channel, data}`.
+- **Mode toggle** (header): **Live** ⇄ **Replay**. When Replay is selected a
+  run-picker dropdown appears; choosing a run re-renders the three index tabs
+  from that run's captured signals filtered by index. Live-only panels (chain +
+  candles) dim with a "live-only" note; the ws status indicator reads "replay";
+  the banner above the chain shows `run_id · source · strategies · ts range`.
+  Switching back to **Live** restores WS streaming.
 - **Frontend tabs:**
-  - **Nifty / BankNifty / Sensex** — live spot + option chain (LTP + Δ/Γ/Θ/ν/IV,
-    ATM highlighted) + 1m candle feed + signals feed. Auto-reconnect on WS drop.
+  - **Nifty / BankNifty / Sensex** — in Live mode: live spot + option chain
+    (LTP + Δ/Γ/Θ/ν/IV, ATM highlighted) + 1m candle feed + signals feed,
+    auto-reconnect on WS drop. In Replay mode: signals from the selected run
+    filtered to the tab's index (up to 500 entries, newest first).
   - **Metrics** — 15-card dashboard polled every 3 s: tick rate, latency
     p50/p95/max, gaps, reconnects, dedup drops, WAL appends, PG flushes & rows,
     candles closed, greeks computed, signals emitted + suppressed (cooldown/risk).
-  - **Replay** — run picker on the left; run detail on the right shows manifest,
-    summary cards, per-strategy/action/timeframe breakdowns, and the signal
-    timeline (up to 500 entries). Color-coded by action (BUY/SELL/HOLD/EXIT).
+  - **Replay** — full run browser: run picker on the left; run detail on the
+    right with manifest, summary cards, per-strategy/action/timeframe breakdowns,
+    and the full signal timeline. Color-coded by action (BUY/SELL/HOLD/EXIT).
 - **Isolation:** each WS client owns its own pubsub connection; patterns are
   scoped per-index so tabs don't cross-talk. Replay mode is pure REST — no WS.
 

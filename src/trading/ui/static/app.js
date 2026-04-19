@@ -15,7 +15,14 @@
     chain: {},   // { strike: { CE: {tick, greeks}, PE: {tick, greeks} } }
     atm: null,
     metricsTimer: null,
-    replayCurrentId: null,
+    replayCurrentId: null,     // currently-inspected run on Replay tab
+    mode: "live",              // "live" | "replay" for index tabs
+    replayMode: {              // populated when mode === "replay"
+      runId: null,
+      signals: [],             // full signal array for the run
+      summary: null,
+      manifest: null,
+    },
   };
 
   async function init() {
@@ -29,6 +36,10 @@
     $("expiry").value = defaultExpiryISO();
     $("load-chain").addEventListener("click", loadChain);
     $("replay-refresh").addEventListener("click", loadReplayList);
+    $("mode-live").addEventListener("click", () => setMode("live"));
+    $("mode-replay").addEventListener("click", () => setMode("replay"));
+    $("replay-picker").addEventListener("change", (e) => onReplayRunSelect(e.target.value));
+    $("replay-banner-clear").addEventListener("click", () => setMode("live"));
     if (state.indices.length) switchTab(state.indices[0]);
   }
 
@@ -75,13 +86,19 @@
       loadReplayList();
       return;
     }
-    // index tab
+    // Index tab
     state.chain = {};
     $("chain-tbody").innerHTML = "";
     $("candles").innerHTML = "";
     $("signals").innerHTML = "";
     $("spot").textContent = "—";
     $("last-seen").textContent = "—";
+
+    if (state.mode === "replay") {
+      renderIndexReplay(key);
+      return;
+    }
+    // live
     await fetchState(key);
     await loadChain();
     connectWs(key);
@@ -411,6 +428,174 @@
       const li = document.createElement("li");
       li.innerHTML = `<span class="k">${k}</span><span class="v">${v}</span>`;
       ul.appendChild(li);
+    }
+  }
+
+  // ----- live / replay mode toggle -----
+
+  async function setMode(mode) {
+    if (mode === state.mode) return;
+    state.mode = mode;
+    $("mode-live").classList.toggle("active", mode === "live");
+    $("mode-replay").classList.toggle("active", mode === "replay");
+    $("replay-picker").disabled = (mode !== "replay");
+
+    if (mode === "replay") {
+      await populateReplayPicker();
+      applyReplayBanner();
+      applyLiveOnlyPanelsDim(true);
+      // If a run is already selected, re-render the active index tab against it.
+      if (state.current && !state.current.startsWith("__") && state.replayMode.runId) {
+        renderIndexReplay(state.current);
+      }
+    } else {
+      // leaving replay mode: drop the signals overlay
+      $("replay-banner").hidden = true;
+      applyLiveOnlyPanelsDim(false);
+      // if we were on an index tab, reconnect live
+      if (state.current && !state.current.startsWith("__")) {
+        switchTab(state.current);
+      }
+    }
+  }
+
+  function applyLiveOnlyPanelsDim(on) {
+    for (const id of ["chain-section", "candles-section"]) {
+      const el = $(id);
+      if (!el) continue;
+      el.classList.toggle("panel-dim", on);
+    }
+  }
+
+  function applyReplayBanner() {
+    const banner = $("replay-banner");
+    const text = $("replay-banner-text");
+    if (state.mode !== "replay") {
+      banner.hidden = true;
+      return;
+    }
+    if (!state.replayMode.runId) {
+      banner.hidden = false;
+      text.textContent = "Replay mode — select a run above to load data";
+      return;
+    }
+    const m = state.replayMode.manifest || {};
+    const s = state.replayMode.summary || {};
+    const bits = [`Replay · ${state.replayMode.runId}`];
+    if (m.source) bits.push(m.source);
+    if (m.strategies) bits.push(`strategies: ${m.strategies.join(", ")}`);
+    if (s.ts_range_ms && s.ts_range_ms[0]) {
+      bits.push(`${fmtTime(s.ts_range_ms[0])} → ${fmtTime(s.ts_range_ms[1])}`);
+    }
+    text.textContent = bits.join(" · ");
+    banner.hidden = false;
+  }
+
+  async function populateReplayPicker() {
+    const picker = $("replay-picker");
+    let runs;
+    try {
+      runs = await fetch("/api/replays").then((r) => r.json());
+    } catch (e) {
+      picker.innerHTML = `<option value="">(error loading runs)</option>`;
+      return;
+    }
+    picker.innerHTML = "";
+    if (!runs.length) {
+      picker.innerHTML = `<option value="">no runs yet</option>`;
+      return;
+    }
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "— pick a run —";
+    picker.appendChild(placeholder);
+    for (const run of runs) {
+      const opt = document.createElement("option");
+      opt.value = run.run_id;
+      const strategies = (run.manifest?.strategies ?? []).join(",");
+      const n = run.headline?.signals_emitted ?? 0;
+      opt.textContent = `${run.run_id} · ${strategies} · ${n} sig`;
+      if (run.run_id === state.replayMode.runId) opt.selected = true;
+      picker.appendChild(opt);
+    }
+  }
+
+  async function onReplayRunSelect(runId) {
+    if (!runId) {
+      state.replayMode.runId = null;
+      state.replayMode.signals = [];
+      state.replayMode.summary = null;
+      state.replayMode.manifest = null;
+      applyReplayBanner();
+      if (state.current && !state.current.startsWith("__")) {
+        renderIndexReplay(state.current);
+      }
+      return;
+    }
+    try {
+      const [summary, manifest, signals] = await Promise.all([
+        fetch(`/api/replays/${runId}/summary`).then((r) => r.json()),
+        fetch(`/api/replays/${runId}/manifest`).then((r) => r.json()),
+        fetch(`/api/replays/${runId}/signals?limit=5000`).then((r) => r.json()),
+      ]);
+      state.replayMode.runId = runId;
+      state.replayMode.summary = summary;
+      state.replayMode.manifest = manifest;
+      state.replayMode.signals = signals;
+    } catch (e) {
+      state.replayMode.runId = null;
+      state.replayMode.signals = [];
+      state.replayMode.summary = null;
+      state.replayMode.manifest = null;
+    }
+    applyReplayBanner();
+    if (state.current && !state.current.startsWith("__")) {
+      renderIndexReplay(state.current);
+    }
+  }
+
+  function renderIndexReplay(idx) {
+    // live banner + dimmed panels
+    applyReplayBanner();
+    applyLiveOnlyPanelsDim(true);
+
+    // header stats from summary ts_range
+    const s = state.replayMode.summary;
+    if (s && s.ts_range_ms && s.ts_range_ms[0]) {
+      $("spot").textContent = "replay";
+      $("last-seen").textContent =
+        `${fmtTime(s.ts_range_ms[0])} → ${fmtTime(s.ts_range_ms[1])}`;
+    } else {
+      $("spot").textContent = "—";
+      $("last-seen").textContent = "—";
+    }
+    const wsEl = $("ws-status");
+    wsEl.textContent = "replay";
+    wsEl.classList.remove("connected");
+    wsEl.classList.remove("disconnected");
+
+    // signals feed filtered to this index
+    const feed = $("signals");
+    feed.innerHTML = "";
+    if (!state.replayMode.runId) {
+      feed.innerHTML = `<li class="muted">pick a run from the dropdown to load signals</li>`;
+      return;
+    }
+    const forIndex = state.replayMode.signals.filter((sg) => sg.index === idx);
+    if (!forIndex.length) {
+      feed.innerHTML = `<li class="muted">no signals for ${idx} in this run</li>`;
+      return;
+    }
+    // Newest first for consistency with live feed
+    forIndex.sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0));
+    const MAX = 500;
+    const take = forIndex.slice(0, MAX);
+    for (const sig of take) {
+      const li = document.createElement("li");
+      li.className = `sig ${sig.action}`;
+      const t = sig.ts ? fmtTime(sig.ts) : "";
+      li.textContent = `${t}  ${sig.strategy} · ${sig.action} ${sig.instrument} (c=${(sig.confidence ?? 0).toFixed(2)})  ${sig.reason ?? ""}`;
+      feed.appendChild(li);
     }
   }
 

@@ -10,6 +10,13 @@
   <header>
     <h1>Trading_Plug&amp;Play</h1>
     <nav id="tabs" aria-label="Indices"></nav>
+    <div id="mode-bar" role="group" aria-label="Mode">
+      <div class="mode-toggle">
+        <button id="mode-live" type="button" class="active">Live</button>
+        <button id="mode-replay" type="button">Replay</button>
+      </div>
+      <select id="replay-picker" disabled title="Select a replay run"></select>
+    </div>
     <div id="status" aria-live="polite">
       <span>spot:</span>
       <span id="spot">—</span>
@@ -22,6 +29,10 @@
   </header>
 
   <main id="view-live">
+    <div id="replay-banner" class="banner" hidden>
+      <span id="replay-banner-text">—</span>
+      <button id="replay-banner-clear" type="button">Back to Live</button>
+    </div>
     <section id="chain-section">
       <div class="section-head">
         <h2>Option chain (live, with Greeks)</h2>
