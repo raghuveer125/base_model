@@ -22,9 +22,20 @@ def _check_index(index: str) -> None:
         raise HTTPException(status_code=404, detail=f"unknown index: {index}")
 
 
+@router.get("/healthz")
+def healthz() -> dict:
+    """Lightweight liveness probe for load balancers — does not touch deps."""
+    return {"ok": True}
+
+
 @router.get("/health")
 def health() -> dict:
-    return {"ok": True}
+    """Full health report with checks, indices, and active alerts.
+
+    See trading.ui.health.evaluate_health for the schema.
+    """
+    from trading.ui.health import evaluate_health
+    return evaluate_health()
 
 
 @router.get("/indices")

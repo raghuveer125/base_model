@@ -439,6 +439,11 @@ no writes into the pipeline.
   - `GET /api/signals?strategy=&limit=50` — recent signals (from Postgres)
   - `GET /api/metrics` — live Redis metrics hash (latency percentiles, tick rate,
     gaps, reconnects, signal counters)
+  - `GET /api/healthz` — lightweight liveness probe (no dep touches) for LBs
+  - `GET /api/health` — full health report: `{status, checks[], indices[],
+    alerts[], metrics}`. Checks: Redis ping, Postgres ping, WAL-dir writability,
+    metrics freshness, latency p95, gap count, reconnect count; per-index
+    staleness evaluated against market hours (IST)
   - `GET /api/replays` — list replay run directories
   - `GET /api/replays/{run_id}/{summary,manifest,signals}` — per-run artifacts
     (run_id is validated; path traversal impossible)
@@ -461,6 +466,7 @@ no writes into the pipeline.
   /?index=NIFTY50                               — live Nifty
   /?mode=replay&run_id=abc123def4567890&index=BANKNIFTY
   /?tab=metrics
+  /?tab=health
   /?tab=replay
   ```
 - **Frontend tabs:**
@@ -471,6 +477,11 @@ no writes into the pipeline.
   - **Metrics** — 15-card dashboard polled every 3 s: tick rate, latency
     p50/p95/max, gaps, reconnects, dedup drops, WAL appends, PG flushes & rows,
     candles closed, greeks computed, signals emitted + suppressed (cooldown/risk).
+  - **Health** — polled every 5 s. Top banner: `healthy / degraded / down`.
+    System-check list with per-check badge + latency (Redis, Postgres, WAL dir,
+    metrics freshness, latency p95, gaps, reconnects). Active-alerts feed
+    (severity + detail + since). Per-index staleness bar (age since last tick,
+    gated by market hours). Thresholds configurable via `HEALTH_*` env vars.
   - **Replay** — full run browser: run picker on the left; run detail on the
     right with manifest, summary cards, per-strategy/action/timeframe breakdowns,
     and the full signal timeline. Color-coded by action (BUY/SELL/HOLD/EXIT).

@@ -37,10 +37,29 @@ def client(monkeypatch):
     return TestClient(create_app())
 
 
-def test_health(client):
-    r = client.get("/api/health")
+def test_healthz_lite_probe(client):
+    r = client.get("/api/healthz")
     assert r.status_code == 200
     assert r.json() == {"ok": True}
+
+
+def test_health_full_shape_with_redis_ok(client):
+    # fakeredis is healthy; PG is not reachable in tests so it should be reported crit.
+    r = client.get("/api/health")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] in {"healthy", "degraded", "down"}
+    assert "checks" in body and len(body["checks"]) >= 5
+    assert "alerts" in body
+    assert "indices" in body and len(body["indices"]) >= 1
+
+    by_name = {c["name"]: c for c in body["checks"]}
+    assert by_name["redis"]["status"] == "ok"
+    # postgres should fail to connect during tests
+    assert by_name["postgres"]["status"] == "crit"
+    assert body["status"] in {"down", "degraded"}
+    # crit check must appear in alerts
+    assert any(a["rule"] == "postgres" for a in body["alerts"])
 
 
 def test_indices_returns_configured_list(client):

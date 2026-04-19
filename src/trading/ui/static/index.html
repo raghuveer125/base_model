@@ -93,6 +93,30 @@
     </div>
   </main>
 
+  <main id="view-health" class="view" hidden>
+    <div class="health-head">
+      <div id="health-banner" class="health-banner healthy">
+        <span id="health-status-label">healthy</span>
+      </div>
+      <div class="muted" id="health-updated">never</div>
+    </div>
+
+    <div class="health-grid">
+      <section>
+        <h2>System checks</h2>
+        <ul id="health-checks" class="checks"></ul>
+      </section>
+      <section>
+        <h2>Active alerts</h2>
+        <ul id="health-alerts" class="feed"></ul>
+      </section>
+      <section>
+        <h2>Per-index staleness</h2>
+        <ul id="health-indices" class="indices"></ul>
+      </section>
+    </div>
+  </main>
+
   <main id="view-replay" class="view" hidden>
     <aside class="replay-list">
       <div class="section-head">

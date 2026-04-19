@@ -5,6 +5,7 @@
 
   const METRICS_TAB = "__metrics__";
   const REPLAY_TAB = "__replay__";
+  const HEALTH_TAB = "__health__";
 
   const state = {
     indices: [],
@@ -15,6 +16,7 @@
     chain: {},   // { strike: { CE: {tick, greeks}, PE: {tick, greeks} } }
     atm: null,
     metricsTimer: null,
+    healthTimer: null,
     replayCurrentId: null,     // currently-inspected run on Replay tab
     mode: "live",              // "live" | "replay" for index tabs
     replayMode: {              // populated when mode === "replay"
@@ -72,6 +74,7 @@
       p.set("run_id", state.replayMode.runId);
     }
     if (state.current === METRICS_TAB) p.set("tab", "metrics");
+    else if (state.current === HEALTH_TAB) p.set("tab", "health");
     else if (state.current === REPLAY_TAB) p.set("tab", "replay");
     else if (state.current) p.set("index", state.current);
     const qs = p.toString();
@@ -102,6 +105,7 @@
 
     let target;
     if (tab === "metrics") target = METRICS_TAB;
+    else if (tab === "health") target = HEALTH_TAB;
     else if (tab === "replay") target = REPLAY_TAB;
     else if (index) target = index;
     else target = state.indices[0];
@@ -124,6 +128,7 @@
     const buttons = [
       ...state.indices.map((idx) => [idx, idx]),
       [METRICS_TAB, "Metrics"],
+      [HEALTH_TAB, "Health"],
       [REPLAY_TAB, "Replay"],
     ];
     for (const [key, label] of buttons) {
@@ -141,6 +146,7 @@
     if (state.ws) { try { state.ws.close(); } catch (e) {} state.ws = null; }
     if (state.reconnectTimer) { clearTimeout(state.reconnectTimer); state.reconnectTimer = null; }
     if (state.metricsTimer) { clearInterval(state.metricsTimer); state.metricsTimer = null; }
+    if (state.healthTimer)  { clearInterval(state.healthTimer);  state.healthTimer  = null; }
 
     state.current = key;
     renderTabs();
@@ -149,6 +155,10 @@
     try {
       if (key === METRICS_TAB) {
         startMetricsPolling();
+        return;
+      }
+      if (key === HEALTH_TAB) {
+        startHealthPolling();
         return;
       }
       if (key === REPLAY_TAB) {
@@ -180,9 +190,12 @@
     const live = $("view-live");
     const metrics = $("view-metrics");
     const replay = $("view-replay");
-    live.hidden = true; metrics.hidden = true; replay.hidden = true;
+    const health = $("view-health");
+    live.hidden = true; metrics.hidden = true;
+    replay.hidden = true; health.hidden = true;
     if (key === METRICS_TAB) metrics.hidden = false;
     else if (key === REPLAY_TAB) replay.hidden = false;
+    else if (key === HEALTH_TAB) health.hidden = false;
     else live.hidden = false;
   }
 
@@ -380,6 +393,87 @@
   function startMetricsPolling() {
     refreshMetrics();
     state.metricsTimer = setInterval(refreshMetrics, 3000);
+  }
+
+  // ----- health view -----
+
+  async function refreshHealth() {
+    let h;
+    try {
+      h = await fetch("/api/health").then((r) => r.json());
+    } catch (e) {
+      setHealthBanner("down");
+      $("health-updated").textContent = "error loading /api/health";
+      return;
+    }
+    setHealthBanner(h.status || "down");
+    $("health-updated").textContent =
+      `updated ${fmtTime(h.generated_ms)}` +
+      (h.market_open ? " · market open" : " · market closed");
+
+    const checks = $("health-checks");
+    checks.innerHTML = "";
+    for (const c of h.checks || []) {
+      const li = document.createElement("li");
+      li.className = c.status;
+      const lat = c.latency_ms != null ? ` · ${c.latency_ms}ms` : "";
+      li.innerHTML = `
+        <span class="name">${c.name}</span>
+        <span class="detail">${escapeHtml(c.detail || "")}${lat}</span>
+        <span class="badge">${c.status}</span>
+      `;
+      checks.appendChild(li);
+    }
+
+    const alerts = $("health-alerts");
+    alerts.innerHTML = "";
+    if (!(h.alerts || []).length) {
+      alerts.innerHTML = `<li class="muted">no active alerts</li>`;
+    } else {
+      for (const a of h.alerts) {
+        const li = document.createElement("li");
+        li.className = `alert ${a.severity}`;
+        li.innerHTML = `
+          <span class="rule">${a.rule}</span>
+          <span>${escapeHtml(a.detail || "")}</span>
+          <span class="when">${fmtTime(a.since_ms)}</span>
+        `;
+        alerts.appendChild(li);
+      }
+    }
+
+    const idxUl = $("health-indices");
+    idxUl.innerHTML = "";
+    for (const idx of h.indices || []) {
+      const li = document.createElement("li");
+      li.className = idx.status;
+      const age = (idx.staleness_s == null)
+        ? "no ticks"
+        : `${idx.staleness_s}s ago`;
+      li.innerHTML = `
+        <span class="idx">${idx.index}</span>
+        <span class="age">${age}</span>
+        <span class="badge">${idx.status}</span>
+      `;
+      idxUl.appendChild(li);
+    }
+  }
+
+  function setHealthBanner(status) {
+    const el = $("health-banner");
+    el.className = "health-banner " + status;
+    $("health-status-label").textContent = status;
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    }[c]));
+  }
+
+  function startHealthPolling() {
+    refreshHealth();
+    state.healthTimer = setInterval(refreshHealth, 5000);
   }
 
   // ----- replay view -----

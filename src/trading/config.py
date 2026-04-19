@@ -77,6 +77,17 @@ class Settings(BaseSettings):
     ui_host: str = "127.0.0.1"
     ui_port: int = 8088
 
+    # Health + alerting
+    health_metrics_stale_after_s: int = 30
+    health_warn_latency_p95_ms: int = 500
+    health_crit_latency_p95_ms: int = 2000
+    health_warn_gaps: int = 10
+    health_crit_gaps: int = 100
+    health_warn_reconnects: int = 3
+    health_crit_reconnects: int = 10
+    health_warn_staleness_s: int = 15
+    health_crit_staleness_s: int = 60
+
     @property
     def strategy_list(self) -> list[str]:
         return [s.strip() for s in self.strategies_enabled.split(",") if s.strip()]
