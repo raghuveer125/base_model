@@ -437,15 +437,25 @@ no writes into the pipeline.
   - `GET /api/chain/{index}?expiry=YYYY-MM-DD` — strikes with tick + joined Greeks
   - `GET /api/candles/{index}?timeframe=1m&limit=100` — recent candles (from Postgres)
   - `GET /api/signals?strategy=&limit=50` — recent signals (from Postgres)
+  - `GET /api/metrics` — live Redis metrics hash (latency percentiles, tick rate,
+    gaps, reconnects, signal counters)
+  - `GET /api/replays` — list replay run directories
+  - `GET /api/replays/{run_id}/{summary,manifest,signals}` — per-run artifacts
+    (run_id is validated; path traversal impossible)
   - `WebSocket /ws/{index}` — psubscribes Redis to `ticks.index.{IDX}`,
     `ticks.option.{IDX}`, `candles.{IDX}.*`, `greeks.{IDX}`, `signals.*` and
     forwards each message as `{channel, data}`.
-- **Frontend:** three tabs (Nifty / BankNifty / Sensex) with live spot, option
-  chain table (LTP + Δ/Γ/Θ/ν/IV per side, ATM row highlighted), 1m candle feed,
-  and signal feed. One WebSocket at a time — switching tabs closes and reopens.
-  Auto-reconnects on drop.
+- **Frontend tabs:**
+  - **Nifty / BankNifty / Sensex** — live spot + option chain (LTP + Δ/Γ/Θ/ν/IV,
+    ATM highlighted) + 1m candle feed + signals feed. Auto-reconnect on WS drop.
+  - **Metrics** — 15-card dashboard polled every 3 s: tick rate, latency
+    p50/p95/max, gaps, reconnects, dedup drops, WAL appends, PG flushes & rows,
+    candles closed, greeks computed, signals emitted + suppressed (cooldown/risk).
+  - **Replay** — run picker on the left; run detail on the right shows manifest,
+    summary cards, per-strategy/action/timeframe breakdowns, and the signal
+    timeline (up to 500 entries). Color-coded by action (BUY/SELL/HOLD/EXIT).
 - **Isolation:** each WS client owns its own pubsub connection; patterns are
-  scoped per-index so tabs don't cross-talk.
+  scoped per-index so tabs don't cross-talk. Replay mode is pure REST — no WS.
 
 ### Run
 

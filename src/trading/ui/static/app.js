@@ -3,6 +3,9 @@
 (() => {
   const $ = (id) => document.getElementById(id);
 
+  const METRICS_TAB = "__metrics__";
+  const REPLAY_TAB = "__replay__";
+
   const state = {
     indices: [],
     current: null,
@@ -11,6 +14,8 @@
     expiry: null,
     chain: {},   // { strike: { CE: {tick, greeks}, PE: {tick, greeks} } }
     atm: null,
+    metricsTimer: null,
+    replayCurrentId: null,
   };
 
   async function init() {
@@ -23,6 +28,7 @@
     renderTabs();
     $("expiry").value = defaultExpiryISO();
     $("load-chain").addEventListener("click", loadChain);
+    $("replay-refresh").addEventListener("click", loadReplayList);
     if (state.indices.length) switchTab(state.indices[0]);
   }
 
@@ -36,29 +42,59 @@
   function renderTabs() {
     const tabs = $("tabs");
     tabs.innerHTML = "";
-    state.indices.forEach((idx) => {
+    const buttons = [
+      ...state.indices.map((idx) => [idx, idx]),
+      [METRICS_TAB, "Metrics"],
+      [REPLAY_TAB, "Replay"],
+    ];
+    for (const [key, label] of buttons) {
       const btn = document.createElement("button");
       btn.type = "button";
-      btn.textContent = idx;
-      btn.addEventListener("click", () => switchTab(idx));
-      if (idx === state.current) btn.classList.add("active");
+      btn.textContent = label;
+      btn.addEventListener("click", () => switchTab(key));
+      if (key === state.current) btn.classList.add("active");
       tabs.appendChild(btn);
-    });
+    }
   }
 
-  async function switchTab(idx) {
+  async function switchTab(key) {
+    // Tear down everything the previous tab owned.
     if (state.ws) { try { state.ws.close(); } catch (e) {} state.ws = null; }
     if (state.reconnectTimer) { clearTimeout(state.reconnectTimer); state.reconnectTimer = null; }
-    state.current = idx;
+    if (state.metricsTimer) { clearInterval(state.metricsTimer); state.metricsTimer = null; }
+
+    state.current = key;
+    renderTabs();
+    showView(key);
+
+    if (key === METRICS_TAB) {
+      startMetricsPolling();
+      return;
+    }
+    if (key === REPLAY_TAB) {
+      loadReplayList();
+      return;
+    }
+    // index tab
     state.chain = {};
     $("chain-tbody").innerHTML = "";
     $("candles").innerHTML = "";
+    $("signals").innerHTML = "";
     $("spot").textContent = "—";
     $("last-seen").textContent = "—";
-    renderTabs();
-    await fetchState(idx);
+    await fetchState(key);
     await loadChain();
-    connectWs(idx);
+    connectWs(key);
+  }
+
+  function showView(key) {
+    const live = $("view-live");
+    const metrics = $("view-metrics");
+    const replay = $("view-replay");
+    live.hidden = true; metrics.hidden = true; replay.hidden = true;
+    if (key === METRICS_TAB) metrics.hidden = false;
+    else if (key === REPLAY_TAB) replay.hidden = false;
+    else live.hidden = false;
   }
 
   async function fetchState(idx) {
@@ -209,6 +245,173 @@
     const n = +ms;
     if (!Number.isFinite(n)) return "—";
     return new Date(n).toLocaleTimeString([], { hour12: false });
+  }
+
+  // ----- metrics view -----
+
+  async function refreshMetrics() {
+    try {
+      const m = await fetch("/api/metrics").then((r) => r.json());
+      setMetric("m-tick-rate",   m.tick_rate_per_s);
+      setMetric("m-lat-p50",     m.ingest_latency_p50_ms);
+      setMetric("m-lat-p95",     m.ingest_latency_p95_ms);
+      setMetric("m-lat-max",     m.ingest_latency_max_ms);
+      setMetric("m-ticks-total", m.ticks_total);
+      setMetric("m-gaps",        m.gap_count);
+      setMetric("m-reconnects",  m.reconnect_count);
+      setMetric("m-dedup",       m.dedup_drops);
+      setMetric("m-wal",         m.wal_appends);
+      setMetric("m-pg-flushes",  m.pg_flushes);
+      const rows = m.pg_rows_flushed;
+      $("m-pg-rows").textContent = (rows ?? 0) + " rows";
+      setMetric("m-candles",     m.candles_closed);
+      setMetric("m-greeks",      m.greeks_computed);
+      setMetric("m-signals-ok",  m.signals_emitted);
+      setMetric("m-signals-cd",  m.signals_suppressed_cooldown);
+      setMetric("m-signals-risk", m.signals_suppressed_risk);
+      const updated = m.updated_ms;
+      $("metrics-updated").textContent = updated
+        ? `updated ${fmtTime(updated)}`
+        : "no metrics yet (is ingest running?)";
+    } catch (e) {
+      $("metrics-updated").textContent = "error loading /api/metrics";
+    }
+  }
+
+  function setMetric(id, v) {
+    const el = $(id);
+    if (v === undefined || v === null) { el.textContent = "—"; return; }
+    if (typeof v === "number") {
+      el.textContent = Number.isInteger(v) ? v.toLocaleString() : v.toFixed(2);
+    } else {
+      el.textContent = String(v);
+    }
+  }
+
+  function startMetricsPolling() {
+    refreshMetrics();
+    state.metricsTimer = setInterval(refreshMetrics, 3000);
+  }
+
+  // ----- replay view -----
+
+  async function loadReplayList() {
+    const ul = $("replay-runs");
+    ul.innerHTML = `<li class="muted">loading…</li>`;
+    let runs;
+    try {
+      runs = await fetch("/api/replays").then((r) => r.json());
+    } catch (e) {
+      ul.innerHTML = `<li class="muted">error loading /api/replays</li>`;
+      return;
+    }
+    if (!runs.length) {
+      ul.innerHTML = `<li class="muted">no replay runs yet — see tpp-replay</li>`;
+      return;
+    }
+    ul.innerHTML = "";
+    for (const run of runs) {
+      const li = document.createElement("li");
+      if (run.run_id === state.replayCurrentId) li.classList.add("active");
+      const mtime = fmtTime(run.mtime_ms);
+      const sig = run.headline?.signals_emitted ?? 0;
+      const strategies = (run.manifest?.strategies ?? []).join(",");
+      li.innerHTML = `
+        <span class="rid">${run.run_id}</span>
+        <span class="meta">${mtime} · ${strategies} · ${sig} signals</span>
+      `;
+      li.addEventListener("click", () => selectReplay(run.run_id));
+      ul.appendChild(li);
+    }
+  }
+
+  async function selectReplay(runId) {
+    state.replayCurrentId = runId;
+    // re-render list for highlight
+    loadReplayList();
+    $("replay-run-id").textContent = runId;
+    $("replay-manifest").textContent = "loading…";
+    $("replay-signals").innerHTML = "";
+    $("replay-signals-count").textContent = "";
+
+    let summary, manifest, signals;
+    try {
+      [summary, manifest, signals] = await Promise.all([
+        fetch(`/api/replays/${runId}/summary`).then((r) => r.json()),
+        fetch(`/api/replays/${runId}/manifest`).then((r) => r.json()),
+        fetch(`/api/replays/${runId}/signals?limit=500`).then((r) => r.json()),
+      ]);
+    } catch (e) {
+      $("replay-manifest").textContent = "error loading run";
+      return;
+    }
+
+    const bits = [];
+    if (manifest.source) bits.push(`source: ${manifest.source}`);
+    if (manifest.strategies) bits.push(`strategies: ${manifest.strategies.join(", ")}`);
+    if (manifest.timeframes) bits.push(`tf: ${manifest.timeframes.join("/")}`);
+    if (manifest.started_at) bits.push(`started: ${manifest.started_at.slice(0, 19)}`);
+    $("replay-manifest").textContent = bits.join(" · ");
+
+    const grid = $("replay-summary-grid");
+    grid.innerHTML = "";
+    for (const [label, value] of summaryCells(summary)) {
+      const cell = document.createElement("div");
+      cell.className = "cell";
+      cell.innerHTML = `<div class="label">${label}</div><div class="value">${value}</div>`;
+      grid.appendChild(cell);
+    }
+
+    fillKv("replay-by-strategy", summary.signals_by_strategy || {});
+    fillKv("replay-by-action",   summary.signals_by_action   || {});
+    fillKv("replay-by-tf",       summary.candles_closed_by_tf || {});
+
+    const feed = $("replay-signals");
+    feed.innerHTML = "";
+    $("replay-signals-count").textContent = `${signals.length} signals`;
+    for (const sig of signals) {
+      const li = document.createElement("li");
+      li.className = `sig ${sig.action}`;
+      const t = sig.ts ? fmtTime(sig.ts) : "";
+      li.textContent = `${t}  ${sig.strategy} · ${sig.action} ${sig.instrument} (c=${(sig.confidence ?? 0).toFixed(2)})  ${sig.reason ?? ""}`;
+      feed.appendChild(li);
+    }
+  }
+
+  function summaryCells(s) {
+    const cells = [
+      ["records read",     (s.records_read ?? 0).toLocaleString()],
+      ["ticks (index)",    (s.ticks_index ?? 0).toLocaleString()],
+      ["ticks (option)",   (s.ticks_option ?? 0).toLocaleString()],
+      ["candles from src", (s.candles_from_source ?? 0).toLocaleString()],
+      ["candles synth",    (s.candles_synthesized ?? 0).toLocaleString()],
+      ["greeks computed",  (s.greeks_computed ?? 0).toLocaleString()],
+      ["signals emitted",  (s.signals_emitted ?? 0).toLocaleString()],
+      ["supp. cooldown",   (s.signals_suppressed_cooldown ?? 0).toLocaleString()],
+      ["supp. risk",       (s.signals_suppressed_risk ?? 0).toLocaleString()],
+      ["wall seconds",     (s.wall_seconds ?? 0).toFixed ? (s.wall_seconds).toFixed(2) : s.wall_seconds],
+    ];
+    if (s.ts_range_ms && s.ts_range_ms[0]) {
+      cells.push(["ts start", fmtTime(s.ts_range_ms[0])]);
+      cells.push(["ts end",   fmtTime(s.ts_range_ms[1])]);
+    }
+    return cells;
+  }
+
+  function fillKv(id, obj) {
+    const ul = $(id);
+    ul.innerHTML = "";
+    const entries = Object.entries(obj);
+    if (!entries.length) {
+      ul.innerHTML = `<li class="muted">—</li>`;
+      return;
+    }
+    entries.sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0));
+    for (const [k, v] of entries) {
+      const li = document.createElement("li");
+      li.innerHTML = `<span class="k">${k}</span><span class="v">${v}</span>`;
+      ul.appendChild(li);
+    }
   }
 
   init();

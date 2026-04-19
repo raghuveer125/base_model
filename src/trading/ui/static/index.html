@@ -21,7 +21,7 @@
     </div>
   </header>
 
-  <main>
+  <main id="view-live">
     <section id="chain-section">
       <div class="section-head">
         <h2>Option chain (live, with Greeks)</h2>
@@ -55,6 +55,66 @@
     <section id="signals-section">
       <h2>Signals</h2>
       <ul id="signals" class="feed"></ul>
+    </section>
+  </main>
+
+  <main id="view-metrics" class="view" hidden>
+    <div class="metrics-head">
+      <h2>Pipeline metrics</h2>
+      <span id="metrics-updated" class="muted">never</span>
+    </div>
+    <div class="metrics-grid">
+      <div class="card"><h3>Tick rate</h3><div class="val" id="m-tick-rate">—</div><div class="unit">ticks/sec</div></div>
+      <div class="card"><h3>Latency p50</h3><div class="val" id="m-lat-p50">—</div><div class="unit">ms</div></div>
+      <div class="card"><h3>Latency p95</h3><div class="val" id="m-lat-p95">—</div><div class="unit">ms</div></div>
+      <div class="card"><h3>Latency max</h3><div class="val" id="m-lat-max">—</div><div class="unit">ms</div></div>
+      <div class="card"><h3>Ticks total</h3><div class="val" id="m-ticks-total">—</div></div>
+      <div class="card"><h3>Gaps</h3><div class="val" id="m-gaps">—</div></div>
+      <div class="card"><h3>Reconnects</h3><div class="val" id="m-reconnects">—</div></div>
+      <div class="card"><h3>Dedup drops</h3><div class="val" id="m-dedup">—</div></div>
+      <div class="card"><h3>WAL appends</h3><div class="val" id="m-wal">—</div></div>
+      <div class="card"><h3>PG flushes</h3><div class="val" id="m-pg-flushes">—</div><div class="unit" id="m-pg-rows">0 rows</div></div>
+      <div class="card"><h3>Candles closed</h3><div class="val" id="m-candles">—</div></div>
+      <div class="card"><h3>Greeks computed</h3><div class="val" id="m-greeks">—</div></div>
+      <div class="card"><h3>Signals emitted</h3><div class="val" id="m-signals-ok">—</div></div>
+      <div class="card"><h3>Suppressed (cooldown)</h3><div class="val" id="m-signals-cd">—</div></div>
+      <div class="card"><h3>Suppressed (risk)</h3><div class="val" id="m-signals-risk">—</div></div>
+    </div>
+  </main>
+
+  <main id="view-replay" class="view" hidden>
+    <aside class="replay-list">
+      <div class="section-head">
+        <h2>Replay runs</h2>
+        <button id="replay-refresh">Refresh</button>
+      </div>
+      <ul id="replay-runs"></ul>
+    </aside>
+    <section class="replay-detail">
+      <header>
+        <h2 id="replay-run-id">— select a run —</h2>
+        <div id="replay-manifest" class="muted"></div>
+      </header>
+      <div class="replay-summary-grid" id="replay-summary-grid"></div>
+      <div class="replay-breakdowns">
+        <div>
+          <h3>Signals by strategy</h3>
+          <ul id="replay-by-strategy" class="kv"></ul>
+        </div>
+        <div>
+          <h3>Signals by action</h3>
+          <ul id="replay-by-action" class="kv"></ul>
+        </div>
+        <div>
+          <h3>Candles by timeframe</h3>
+          <ul id="replay-by-tf" class="kv"></ul>
+        </div>
+      </div>
+      <div class="replay-signals-head">
+        <h3>Signals timeline</h3>
+        <span class="muted" id="replay-signals-count"></span>
+      </div>
+      <ul id="replay-signals" class="feed"></ul>
     </section>
   </main>
 

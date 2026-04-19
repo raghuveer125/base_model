@@ -1,8 +1,9 @@
-"""REST endpoints for the UI — read-only views over Redis + Postgres."""
+"""REST endpoints for the UI — read-only views over Redis + Postgres + replay artifacts."""
 
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 
 import orjson
 from fastapi import APIRouter, HTTPException, Query
@@ -139,3 +140,144 @@ def signals(
 
 def _iso(v: datetime | None) -> str | None:
     return v.isoformat() if isinstance(v, datetime) else None
+
+
+# ---------------------------------------------------------------------------
+# Metrics
+# ---------------------------------------------------------------------------
+
+@router.get("/metrics")
+def metrics() -> dict:
+    """Snapshot of the live in-process metrics hash published by MetricsPublisher.
+
+    Keys match the ReplaySummary + live counters: tick_rate_per_s,
+    ingest_latency_p50_ms/p95_ms/max_ms, gap_count, reconnect_count, dedup_drops,
+    wal_appends, pg_flushes, pg_rows_flushed, candles_closed, greeks_computed,
+    greeks_skipped, signals_emitted, signals_suppressed_cooldown,
+    signals_suppressed_risk, ticks_total.
+    """
+    store = LiveStore()
+    hash_data = store.r.hgetall("tpp:metrics") or {}
+    ts_raw = store.r.get("tpp:metrics:ts")
+    out: dict = {}
+    for k, v in hash_data.items():
+        key = k.decode() if isinstance(k, bytes) else str(k)
+        val = v.decode() if isinstance(v, bytes) else str(v)
+        out[key] = _coerce_number(val)
+    out["updated_ms"] = int(ts_raw) if ts_raw else None
+    return out
+
+
+def _coerce_number(v: str) -> int | float | str:
+    try:
+        if "." in v:
+            return float(v)
+        return int(v)
+    except ValueError:
+        return v
+
+
+# ---------------------------------------------------------------------------
+# Replay artifacts
+# ---------------------------------------------------------------------------
+
+_SAFE_RUN_ID_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
+
+
+def _is_safe_run_id(run_id: str) -> bool:
+    return bool(run_id) and len(run_id) <= 64 and all(c in _SAFE_RUN_ID_CHARS for c in run_id)
+
+
+def _replay_root() -> Path:
+    return get_settings().log_dir / "replays"
+
+
+def _replay_dir(run_id: str) -> Path:
+    if not _is_safe_run_id(run_id):
+        raise HTTPException(status_code=400, detail="invalid run_id")
+    d = _replay_root() / run_id
+    if not d.exists() or not d.is_dir():
+        raise HTTPException(status_code=404, detail=f"run not found: {run_id}")
+    return d
+
+
+def _load_json(path: Path) -> dict:
+    try:
+        return orjson.loads(path.read_bytes())
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+
+@router.get("/replays")
+def list_replays() -> list[dict]:
+    root = _replay_root()
+    if not root.exists():
+        return []
+    runs: list[dict] = []
+    for d in sorted(root.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+        if not d.is_dir():
+            continue
+        manifest_p = d / "manifest.json"
+        summary_p = d / "summary.json"
+        if not manifest_p.exists():
+            continue
+        try:
+            manifest = orjson.loads(manifest_p.read_bytes())
+        except Exception:  # noqa: BLE001
+            continue
+        summary: dict = {}
+        if summary_p.exists():
+            try:
+                summary = orjson.loads(summary_p.read_bytes())
+            except Exception:  # noqa: BLE001
+                pass
+        runs.append({
+            "run_id": d.name,
+            "mtime_ms": int(d.stat().st_mtime * 1000),
+            "manifest": manifest,
+            "headline": {
+                "signals_emitted": summary.get("signals_emitted"),
+                "signals_suppressed_cooldown": summary.get("signals_suppressed_cooldown"),
+                "signals_suppressed_risk": summary.get("signals_suppressed_risk"),
+                "records_read": summary.get("records_read"),
+                "ts_range_ms": summary.get("ts_range_ms"),
+                "wall_seconds": summary.get("wall_seconds"),
+            },
+        })
+    return runs
+
+
+@router.get("/replays/{run_id}/summary")
+def replay_summary(run_id: str) -> dict:
+    return _load_json(_replay_dir(run_id) / "summary.json")
+
+
+@router.get("/replays/{run_id}/manifest")
+def replay_manifest(run_id: str) -> dict:
+    return _load_json(_replay_dir(run_id) / "manifest.json")
+
+
+@router.get("/replays/{run_id}/signals")
+def replay_signals(
+    run_id: str,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(500, ge=1, le=5000),
+) -> list[dict]:
+    path = _replay_dir(run_id) / "signals.jsonl"
+    if not path.exists():
+        return []
+    out: list[dict] = []
+    with open(path, "rb") as f:
+        for i, raw in enumerate(f):
+            if i < offset:
+                continue
+            if i >= offset + limit:
+                break
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                out.append(orjson.loads(raw))
+            except orjson.JSONDecodeError:
+                continue
+    return out
