@@ -137,6 +137,35 @@ class IndexCandle(_Strict):
         return v
 
 
+SignalAction = Literal["BUY", "SELL", "HOLD", "EXIT"]
+
+
+class Signal(BaseModel):
+    """A trading signal emitted by a Strategy.
+
+    Phase 4 does NOT execute signals — this is the logging + risk contract only.
+    `instrument` is a Fyers-style symbol (e.g. NSE:NIFTY26O0125000CE) OR an index name.
+    """
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True,
+                              populate_by_name=True)
+
+    strategy: Annotated[str, Field(min_length=1)]
+    index: Annotated[str, Field(min_length=1)]
+    action: SignalAction
+    instrument: Annotated[str, Field(min_length=1)]
+    reason: str = ""
+    confidence: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0
+    metadata: dict = Field(default_factory=dict)
+    ts: Annotated[int, Field(ge=0)]
+
+    @field_validator("index")
+    @classmethod
+    def _valid_index(cls, v: str) -> str:
+        if v not in Index._value2member_map_:
+            raise ValueError(f"unknown index: {v}")
+        return v
+
+
 class OptionGreeks(_Strict):
     """Black-Scholes Greeks for a single option contract.
 

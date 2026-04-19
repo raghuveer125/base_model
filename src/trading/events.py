@@ -37,9 +37,14 @@ def ch_greeks(index: str) -> str:
     return f"greeks.{index.upper()}"
 
 
+def ch_signal(strategy: str) -> str:
+    return f"signals.{strategy}"
+
+
 ALL_INGEST_CHANNELS = ("ticks.index.*", "ticks.option.*", "option_chain.*")
 ALL_CANDLE_CHANNELS = ("candles.*",)
 ALL_GREEKS_CHANNELS = ("greeks.*",)
+ALL_SIGNAL_CHANNELS = ("signals.*",)
 
 
 class EventBus:

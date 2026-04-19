@@ -1,7 +1,7 @@
 # Trading Plug&Play
 
 Modular real-time options analytics engine for **Nifty50**, **BankNifty**, **Sensex** via Fyers.
-Phases 1 (data pipeline), 2 (candles) and 3 (Greeks) are complete; later phases add strategies and UI.
+Phases 1 (data pipeline), 2 (candles), 3 (Greeks) and 4 (strategy framework) are complete; UI is next.
 
 ## Design principles (non-negotiable)
 
@@ -56,6 +56,21 @@ Redis pub/sub: ticks.index.* + ticks.option.*
                  └──► emits:
                        ├──► tpp:greeks:<IDX>:<EXPIRY>:<STRIKE>:<TYPE>
                        └──► publish greeks.<IDX>
+
+Redis pub/sub: ticks.* + candles.* + greeks.*
+                 │
+                 ▼
+            strategies.StrategyEngine (separate process)
+                 │
+                 ├──► fanout to each registered Strategy (on_tick / on_candle_close / on_greeks)
+                 ├──► Strategy.emit(…) → CooldownManager (per strategy+instrument)
+                 │                     → RiskEngine     (hour/day caps, index+action allowlist)
+                 │                     → SignalLogger
+                 │
+                 └──► SignalLogger:
+                       ├──► append signals.jsonl (fsync)
+                       ├──► INSERT into signals table
+                       └──► publish signals.<STRATEGY>
 ```
 
 ## Project layout
@@ -74,6 +89,12 @@ src/trading/
   ingest.py              Orchestrator: WS → WAL → processors → Redis + PG + bus
   candles.py             CandleAggregator + CandleEngine (subscribes ticks.index.*)
   greeks.py              Black-Scholes + GreeksEngine (subscribes ticks.*)
+  strategies/
+    base.py              Strategy ABC + StrategyContext + emit
+    risk.py              CooldownManager + RiskEngine
+    logger.py            SignalLogger (jsonl + PG + pub/sub)
+    engine.py            StrategyEngine runner
+    heartbeat.py         observer strategy (no-op signals)
   metrics.py             in-process counters + Redis snapshot
   scripts/
     auth_bootstrap.py    `tpp-auth`
@@ -83,6 +104,7 @@ src/trading/
     replay_wal.py        `tpp-replay-wal`
     run_candles.py       `tpp-candles`
     run_greeks.py        `tpp-greeks`
+    run_strategies.py    `tpp-strategies`
 tests/
   test_adapter.py
   test_wal_and_ingest_helpers.py
@@ -123,10 +145,15 @@ tpp-candles
 # 7. Run Greeks engine in a separate shell (also independent)
 tpp-greeks
 
-# 8. Daily maintenance
+# 8. Run strategy framework (observer-only until strategies are registered)
+tpp-strategies --list                    # show registered strategies
+tpp-strategies                            # uses STRATEGIES_ENABLED
+tpp-strategies --strategy heartbeat       # or explicit override
+
+# 9. Daily maintenance
 tpp-retention
 
-# 9. Replay from WAL (after outage / dry rebuild)
+# 10. Replay from WAL (after outage / dry rebuild)
 tpp-replay-wal --date 2026-04-19
 ```
 
@@ -187,6 +214,7 @@ The same snapshot is also logged at INFO every 5s as `metrics_snapshot` events.
 | `option_chain.<IDX>`        | `OptionChainSnapshot` JSON (future)   |
 | `candles.<IDX>.<TF>`        | `IndexCandle` JSON on bucket close    |
 | `greeks.<IDX>`              | `OptionGreeks` JSON on recompute      |
+| `signals.<STRATEGY>`        | `Signal` JSON on admitted emission    |
 
 ## WAL format
 
@@ -252,9 +280,54 @@ Zero changes to ingest or candles.
   Never NaN.
 - **Emits** `greeks.<IDX>` on each computation.
 
+## Phase 4 — Strategy framework (no execution)
+
+Independent process (`tpp-strategies`). Subscribes to `ticks.*`, `candles.*`,
+`greeks.*`. Emits **signals only** — no order placement. Zero changes to earlier phases.
+
+### Writing a strategy
+
+```python
+from trading.strategies import register
+from trading.strategies.base import Strategy, StrategyContext
+
+@register("my_strat")
+class MyStrat(Strategy):
+    def on_candle_close(self, ctx: StrategyContext, candle):
+        if candle.close > candle.open * 1.01:
+            ctx.emit(
+                strategy=self.name,
+                index=candle.index,
+                action="BUY",
+                instrument=candle.index,
+                reason="1% up candle",
+                confidence=0.6,
+            )
+```
+
+Drop the module anywhere under `trading/strategies/`, import it, and set
+`STRATEGIES_ENABLED=my_strat` (or pass `--strategy my_strat`). The engine
+routes the emit through cooldown + risk + logger.
+
+### Guarantees
+
+- **Cooldown** per `(strategy, instrument)` — default 5 min, configurable.
+- **Risk caps** — max signals per hour + per day per strategy, index allowlist, action allowlist.
+- **Durable log** — every admitted signal is appended to `{LOG_DIR}/signals.jsonl`
+  (fsync) before any network call. The jsonl is authoritative; Postgres and pub/sub
+  can be rebuilt from it.
+- **Crash isolation** — any callback exception is caught and logged; the stream keeps flowing.
+- **Observability** — `signals_emitted`, `signals_suppressed_cooldown`, `signals_suppressed_risk`
+  surfaced in the metrics snapshot.
+
+### Built-in strategy
+
+`heartbeat` — observer only. Emits nothing; logs tick/candle/greek counts as a
+wiring check. Keep it in `STRATEGIES_ENABLED` in dev to verify the pipe is live.
+
 ## What is not built yet
 
-- Strategy framework (Phase 5).
 - Web UI (Phase 6).
+- Order execution (deliberately out of scope for Phase 4).
 
 Each plugs into the existing `EventBus` without changes to earlier phases.

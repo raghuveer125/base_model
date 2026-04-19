@@ -45,3 +45,20 @@ CREATE TABLE IF NOT EXISTS index_candles (
 );
 CREATE INDEX IF NOT EXISTS ix_index_candles_lookup ON index_candles (index, timeframe, open_ts DESC);
 CREATE INDEX IF NOT EXISTS ix_index_candles_ts     ON index_candles (open_ts);
+
+
+CREATE TABLE IF NOT EXISTS signals (
+    id            BIGSERIAL PRIMARY KEY,
+    strategy      TEXT        NOT NULL,
+    index         TEXT        NOT NULL,
+    action        TEXT        NOT NULL CHECK (action IN ('BUY','SELL','HOLD','EXIT')),
+    instrument    TEXT        NOT NULL,
+    reason        TEXT        NOT NULL DEFAULT '',
+    confidence    DOUBLE PRECISION NOT NULL DEFAULT 0,
+    metadata      JSONB       NOT NULL DEFAULT '{}'::jsonb,
+    ts_signal     BIGINT      NOT NULL,
+    ts_ingest     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS ix_signals_strategy_ts ON signals (strategy, ts_ingest DESC);
+CREATE INDEX IF NOT EXISTS ix_signals_ts          ON signals (ts_ingest);

@@ -51,6 +51,9 @@ class Metrics:
         self.candles_closed = 0
         self.greeks_computed = 0
         self.greeks_skipped = 0
+        self.signals_emitted = 0
+        self.signals_suppressed_cooldown = 0
+        self.signals_suppressed_risk = 0
 
     def observe_tick(self, ts_exchange_ms: int, ts_received_ms: int) -> None:
         lat = ts_received_ms - ts_exchange_ms
@@ -94,6 +97,18 @@ class Metrics:
         with self._lock:
             self.greeks_skipped += 1
 
+    def incr_signal_emit(self) -> None:
+        with self._lock:
+            self.signals_emitted += 1
+
+    def incr_signal_cooldown(self) -> None:
+        with self._lock:
+            self.signals_suppressed_cooldown += 1
+
+    def incr_signal_risk(self) -> None:
+        with self._lock:
+            self.signals_suppressed_risk += 1
+
     def snapshot(self) -> dict[str, int | float]:
         with self._lock:
             lats = list(self._lat)
@@ -108,6 +123,9 @@ class Metrics:
             candles_closed = self.candles_closed
             greeks_computed = self.greeks_computed
             greeks_skipped = self.greeks_skipped
+            signals_emitted = self.signals_emitted
+            signals_suppressed_cooldown = self.signals_suppressed_cooldown
+            signals_suppressed_risk = self.signals_suppressed_risk
 
         if len(times) >= 2:
             span_s = (times[-1] - times[0]) / 1000.0
@@ -130,6 +148,9 @@ class Metrics:
             "candles_closed": candles_closed,
             "greeks_computed": greeks_computed,
             "greeks_skipped": greeks_skipped,
+            "signals_emitted": signals_emitted,
+            "signals_suppressed_cooldown": signals_suppressed_cooldown,
+            "signals_suppressed_risk": signals_suppressed_risk,
         }
 
 

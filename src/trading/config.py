@@ -66,6 +66,17 @@ class Settings(BaseSettings):
     greeks_spot_trigger_points: float = 2.0         # chain-wide recompute on spot move ≥ this
     greeks_cache_maxsize: int = 4096
 
+    # Strategies (Phase 4) — framework only
+    strategies_enabled: str = "heartbeat"           # csv list of registered names
+    strategy_cooldown_seconds: int = 300            # per-(strategy, instrument) throttle
+    strategy_max_signals_per_hour: int = 20
+    strategy_max_signals_per_day: int = 100
+    strategy_signal_log_file: str = "signals.jsonl"
+
+    @property
+    def strategy_list(self) -> list[str]:
+        return [s.strip() for s in self.strategies_enabled.split(",") if s.strip()]
+
     @field_validator("wal_dir", "log_dir", mode="before")
     @classmethod
     def _coerce_path(cls, v: object) -> Path:

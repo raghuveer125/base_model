@@ -38,6 +38,7 @@ tpp-replay-wal  = "trading.scripts.replay_wal:main"
 tpp-retention   = "trading.scripts.run_retention:main"
 tpp-candles     = "trading.scripts.run_candles:main"
 tpp-greeks      = "trading.scripts.run_greeks:main"
+tpp-strategies  = "trading.scripts.run_strategies:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -14,7 +14,7 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 
 from trading.config import get_settings
 from trading.logging_setup import get_logger
-from trading.schemas import IndexCandle, IndexTick, OptionGreeks, OptionTick
+from trading.schemas import IndexCandle, IndexTick, OptionGreeks, OptionTick, Signal
 
 log = get_logger(__name__)
 SCHEMA_FILE = Path(__file__).with_name("storage_schema.sql")
@@ -220,8 +220,28 @@ def insert_candles(rows: Sequence[IndexCandle]) -> int:
     return len(rows)
 
 
+@retry(reraise=True, stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.2, max=2),
+       retry=retry_if_exception_type(psycopg.OperationalError))
+def insert_signals(rows: Sequence[Signal]) -> int:
+    if not rows:
+        return 0
+    with get_pg_pool().connection() as conn, conn.cursor() as cur:
+        cur.executemany(
+            "INSERT INTO signals "
+            "(strategy, index, action, instrument, reason, confidence, metadata, ts_signal) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s)",
+            [
+                (s.strategy, s.index, s.action, s.instrument, s.reason,
+                 s.confidence, orjson.dumps(s.metadata).decode(), s.ts)
+                for s in rows
+            ],
+        )
+        conn.commit()
+    return len(rows)
+
+
 def enforce_retention(days: int | None = None) -> dict[str, int]:
-    """Remove rows older than `days` days. Single-tenant; bounded to three known tables."""
+    """Remove rows older than `days` days. Single-tenant; bounded to known tables."""
     d = days or get_settings().retention_days
     purged: dict[str, int] = {}
     stmt = "DELETE FROM {tbl} WHERE {col} < now() - interval '{n} days'"
@@ -230,6 +250,7 @@ def enforce_retention(days: int | None = None) -> dict[str, int]:
             ("index_ticks", "ts"),
             ("option_chain_data", "ts"),
             ("index_candles", "open_ts"),
+            ("signals", "ts_ingest"),
         ):
             cur.execute(stmt.format(tbl=table, col=ts_col, n=d))
             purged[table] = cur.rowcount or 0
