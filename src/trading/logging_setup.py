@@ -22,10 +22,11 @@ def configure_logging() -> None:
     s = get_settings()
     level = getattr(logging, s.log_level.upper(), logging.INFO)
 
+    # `add_logger_name` requires a stdlib-style logger; we use PrintLogger for
+    # zero-stdlib-coupling, so we drop it and keep method_name-based level.
     shared_processors: list[structlog.types.Processor] = [
         structlog.contextvars.merge_contextvars,
-        structlog.stdlib.add_logger_name,
-        structlog.stdlib.add_log_level,
+        structlog.processors.add_log_level,
         structlog.processors.TimeStamper(fmt="iso", utc=True),
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,

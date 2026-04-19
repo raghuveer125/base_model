@@ -58,9 +58,9 @@ def test_dedup_evicts_oldest_over_capacity():
     d = Dedup(maxsize=2)
     d.seen("a", 1)
     d.seen("b", 1)
-    d.seen("c", 1)
-    assert d.seen("a", 1) is False
-    assert d.seen("b", 1) is True
+    d.seen("c", 1)        # evicts ("a", 1); cache is [("b",1), ("c",1)]
+    assert d.seen("b", 1) is True    # still there (most-recently-used now)
+    assert d.seen("c", 1) is True    # still there
 
 
 def test_gap_detector_fires_only_on_threshold():

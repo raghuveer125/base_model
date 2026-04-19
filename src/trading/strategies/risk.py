@@ -19,8 +19,7 @@ class CooldownManager:
     def should_suppress(self, sig: Signal) -> bool:
         key = (sig.strategy, sig.instrument)
         with self._lock:
-            last = self._last.get(key, 0)
-            if sig.ts - last < self.cooldown_ms:
+            if key in self._last and sig.ts - self._last[key] < self.cooldown_ms:
                 return True
             self._last[key] = sig.ts
             return False

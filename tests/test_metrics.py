@@ -57,5 +57,7 @@ def test_snapshot_contains_all_expected_keys():
         "ingest_latency_p50_ms", "ingest_latency_p95_ms", "ingest_latency_max_ms",
         "gap_count", "reconnect_count", "dedup_drops",
         "wal_appends", "pg_flushes", "pg_rows_flushed",
+        "candles_closed", "greeks_computed", "greeks_skipped",
+        "signals_emitted", "signals_suppressed_cooldown", "signals_suppressed_risk",
     }
     assert set(snap.keys()) == expected
