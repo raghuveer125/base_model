@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     strategy_max_signals_per_day: int = 100
     strategy_signal_log_file: str = "signals.jsonl"
 
+    # UI (Phase 6)
+    ui_host: str = "127.0.0.1"
+    ui_port: int = 8088
+
     @property
     def strategy_list(self) -> list[str]:
         return [s.strip() for s in self.strategies_enabled.split(",") if s.strip()]

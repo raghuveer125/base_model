@@ -18,6 +18,8 @@ dependencies = [
     "orjson>=3.10.7",
     "httpx>=0.27.2",
     "click>=8.1.7",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
 ]
 
 [project.optional-dependencies]
@@ -42,6 +44,7 @@ tpp-strategies  = "trading.scripts.run_strategies:main"
 tpp-backtest    = "trading.scripts.run_backtest:main"
 tpp-replay      = "trading.scripts.run_replay:main"
 tpp-replay-diff = "trading.scripts.diff_replay:main"
+tpp-ui          = "trading.scripts.run_ui:main"
 
 [build-system]
 requires = ["hatchling"]

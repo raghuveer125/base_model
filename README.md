@@ -1,7 +1,7 @@
 # Trading Plug&Play
 
 Modular real-time options analytics engine for **Nifty50**, **BankNifty**, **Sensex** via Fyers.
-Phases 1 (data pipeline), 2 (candles), 3 (Greeks), 4 (strategy framework) and 5 (backtest + replay) are complete; UI is next.
+All six phases are complete: data pipeline, candle engine, Greeks, strategy framework, backtest + replay, and web UI.
 
 ## Design principles (non-negotiable)
 
@@ -94,6 +94,11 @@ src/trading/
     sources.py           EventSource protocol + WAL / Postgres / Merged sources
     engine.py            ReplayEngine + deterministic run-id + per-run artifacts
     diff.py              compare_summaries + compare_signal_jsonl
+  ui/
+    app.py               FastAPI factory
+    rest.py              REST endpoints (indices, state, chain, candles, signals)
+    ws.py                WebSocket /ws/{index} bridge over Redis pub/sub
+    static/              index.html + style.css + app.js (vanilla JS, no build)
   strategies/
     base.py              Strategy ABC + StrategyContext + emit
     risk.py              CooldownManager + RiskEngine
@@ -113,6 +118,7 @@ src/trading/
     run_backtest.py      `tpp-backtest`
     run_replay.py        `tpp-replay`
     diff_replay.py       `tpp-replay-diff`
+    run_ui.py            `tpp-ui`
 tests/
   test_adapter.py
   test_wal_and_ingest_helpers.py
@@ -171,6 +177,10 @@ tpp-replay --source merged --strategy my_strat  --date 2026-04-19
 
 # 12. Compare two replay runs
 tpp-replay-diff ./logs/replays/<run_A> ./logs/replays/<run_B>
+
+# 13. Web UI — live dashboard (Nifty/BankNifty/Sensex tabs)
+tpp-ui
+# then open http://127.0.0.1:8088/
 ```
 
 ## Redis key schema
@@ -415,9 +425,37 @@ Guarantees:
   / emitted-vs-suppressed signals and the ts range — useful for diffing strategy
   variants.
 
+## Phase 6 — Web UI
+
+Independent FastAPI service (`tpp-ui`) — read-only, streams from Redis pub/sub,
+no writes into the pipeline.
+
+- **Stack:** FastAPI + uvicorn + `redis.asyncio` + vanilla JS/CSS (no build step).
+- **Endpoints:**
+  - `GET /api/health`, `GET /api/indices`
+  - `GET /api/state/{index}` — spot, ATM, last-seen, latest tick (from Redis)
+  - `GET /api/chain/{index}?expiry=YYYY-MM-DD` — strikes with tick + joined Greeks
+  - `GET /api/candles/{index}?timeframe=1m&limit=100` — recent candles (from Postgres)
+  - `GET /api/signals?strategy=&limit=50` — recent signals (from Postgres)
+  - `WebSocket /ws/{index}` — psubscribes Redis to `ticks.index.{IDX}`,
+    `ticks.option.{IDX}`, `candles.{IDX}.*`, `greeks.{IDX}`, `signals.*` and
+    forwards each message as `{channel, data}`.
+- **Frontend:** three tabs (Nifty / BankNifty / Sensex) with live spot, option
+  chain table (LTP + Δ/Γ/Θ/ν/IV per side, ATM row highlighted), 1m candle feed,
+  and signal feed. One WebSocket at a time — switching tabs closes and reopens.
+  Auto-reconnects on drop.
+- **Isolation:** each WS client owns its own pubsub connection; patterns are
+  scoped per-index so tabs don't cross-talk.
+
+### Run
+
+```bash
+tpp-ui                         # http://127.0.0.1:8088
+tpp-ui --port 9000 --reload    # dev
+```
+
 ## What is not built yet
 
-- Web UI (Phase 6).
 - Order execution (deliberately out of scope).
 
 Each plugs into the existing `EventBus` without changes to earlier phases.
