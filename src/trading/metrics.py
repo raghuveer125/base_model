@@ -48,6 +48,7 @@ class Metrics:
         self.wal_appends = 0
         self.pg_flushes = 0
         self.pg_rows_flushed = 0
+        self.candles_closed = 0
 
     def observe_tick(self, ts_exchange_ms: int, ts_received_ms: int) -> None:
         lat = ts_received_ms - ts_exchange_ms
@@ -79,6 +80,10 @@ class Metrics:
             self.pg_flushes += 1
             self.pg_rows_flushed += rows
 
+    def incr_candle_close(self) -> None:
+        with self._lock:
+            self.candles_closed += 1
+
     def snapshot(self) -> dict[str, int | float]:
         with self._lock:
             lats = list(self._lat)
@@ -90,6 +95,7 @@ class Metrics:
             wal_appends = self.wal_appends
             pg_flushes = self.pg_flushes
             pg_rows_flushed = self.pg_rows_flushed
+            candles_closed = self.candles_closed
 
         if len(times) >= 2:
             span_s = (times[-1] - times[0]) / 1000.0
@@ -109,6 +115,7 @@ class Metrics:
             "wal_appends": wal_appends,
             "pg_flushes": pg_flushes,
             "pg_rows_flushed": pg_rows_flushed,
+            "candles_closed": candles_closed,
         }
 
 

@@ -1,7 +1,7 @@
 # Trading Plug&Play
 
 Modular real-time options analytics engine for **Nifty50**, **BankNifty**, **Sensex** via Fyers.
-Phase 1 (the data pipeline) is complete; later phases add candles, Greeks, strategies, and UI.
+Phase 1 (data pipeline) and Phase 2 (candle engine) are complete; later phases add Greeks, strategies, and UI.
 
 ## Design principles (non-negotiable)
 
@@ -27,6 +27,21 @@ Fyers WS ──► ingest.Orchestrator ──► WAL (jsonl on disk, fsync'd)
                  │                               └──► BatchBuffer ──► Postgres
                  │
                  └──► reconnect loop (exp backoff, capped)
+
+Redis pub/sub: ticks.index.*
+                 │
+                 ▼
+            candles.CandleEngine (separate process)
+                 │
+                 ├──► CandleAggregator per (index, timeframe)   {1m, 5m, 15m}
+                 ├──► bucket = floor(ts_exchange, step) — exchange-time aligned
+                 ├──► in-progress state persisted to Redis every tick
+                 ├──► closer thread fires buckets whose end has passed
+                 │
+                 └──► on bucket close:
+                       ├──► INSERT into index_candles (UPSERT on conflict)
+                       ├──► publish candles.<IDX>.<TF>
+                       └──► cache tpp:candle:last_close:<IDX>:<TF>
 ```
 
 ## Project layout
@@ -43,12 +58,15 @@ src/trading/
   auth.py                Fyers TOTP auto-login + token cache
   adapter.py             normalize raw Fyers payloads into canonical models
   ingest.py              Orchestrator: WS → WAL → processors → Redis + PG + bus
+  candles.py             CandleAggregator + CandleEngine (subscribes ticks.index.*)
+  metrics.py             in-process counters + Redis snapshot
   scripts/
     auth_bootstrap.py    `tpp-auth`
     init_db.py           `tpp-init-db`
     run_ingest.py        `tpp-ingest`
     run_retention.py     `tpp-retention`
     replay_wal.py        `tpp-replay-wal`
+    run_candles.py       `tpp-candles`
 tests/
   test_adapter.py
   test_wal_and_ingest_helpers.py
@@ -83,10 +101,13 @@ tpp-ingest \
   --expiry BANKNIFTY=2026-04-30 \
   --expiry SENSEX=2026-04-25
 
-# 6. Daily maintenance
+# 6. Run candle engine in a separate shell (independent process)
+tpp-candles
+
+# 7. Daily maintenance
 tpp-retention
 
-# 7. Replay from WAL (after outage / dry rebuild)
+# 8. Replay from WAL (after outage / dry rebuild)
 tpp-replay-wal --date 2026-04-19
 ```
 
@@ -101,6 +122,8 @@ tpp-replay-wal --date 2026-04-19
 | `tpp:spot:{INDEX}`                               | string | latest spot (float)            |
 | `tpp:last_seen:{INDEX}`                          | string | epoch ms of most recent tick   |
 | `tpp:token:fyers`                                | string | access-token JSON              |
+| `tpp:candle:in_progress:{INDEX}:{TF}`            | string | in-progress aggregator state   |
+| `tpp:candle:last_close:{INDEX}:{TF}`             | string | last closed `IndexCandle` JSON |
 
 `{EXPIRY}` = ISO `YYYY-MM-DD`. `{TYPE}` = `CE` or `PE`.
 
@@ -137,11 +160,12 @@ The same snapshot is also logged at INFO every 5s as `metrics_snapshot` events.
 
 ## Pub/sub channels
 
-| pattern                 | payload                               |
-|-------------------------|---------------------------------------|
-| `ticks.index.<IDX>`     | `IndexTick` JSON                      |
-| `ticks.option.<IDX>`    | `OptionTick` JSON                     |
-| `option_chain.<IDX>`    | `OptionChainSnapshot` JSON (Phase 2+) |
+| pattern                     | payload                               |
+|-----------------------------|---------------------------------------|
+| `ticks.index.<IDX>`         | `IndexTick` JSON                      |
+| `ticks.option.<IDX>`        | `OptionTick` JSON                     |
+| `option_chain.<IDX>`        | `OptionChainSnapshot` JSON (future)   |
+| `candles.<IDX>.<TF>`        | `IndexCandle` JSON on bucket close    |
 
 ## WAL format
 
@@ -171,11 +195,28 @@ pytest -q
 
 Adapter, WAL, Dedup, GapDetector are covered. Postgres/Redis integration tests live in Phase 2.
 
-## What Phase 1 does NOT yet do
+## Phase 2 — Candle engine
 
-- Candle aggregation (Phase 2).
+Independent process (`tpp-candles`). Subscribes to Redis pub/sub `ticks.index.*`
+and does **not** touch the ingestion pipeline. Core guarantees:
+
+- **Exchange-time aligned buckets.** Bucket start = `floor(ts_exchange_ms / step_ms) * step_ms`.
+  We never rely on wall-clock for alignment — only for the closer sweep.
+- **Restart-safe.** Every tick flushes the in-progress aggregator state to Redis
+  (`tpp:candle:in_progress:{IDX}:{TF}`). On startup the engine rehydrates; if the bucket's
+  `close_ts` is already in the past, it's closed and emitted immediately.
+- **Stale-close sweep.** A 1-second closer thread emits buckets whose end has passed
+  even if no new tick has arrived (low-volume symbols, market close).
+- **Out-of-order drop.** Ticks for a past bucket are logged + discarded — closed candles
+  are immutable.
+- **PG idempotent upsert.** `ON CONFLICT (index, timeframe, open_ts) DO UPDATE` — replays
+  or reconnects don't duplicate rows.
+- **Emits `candle_close`** as Redis pub/sub on `candles.<IDX>.<TF>` for downstream strategies.
+
+## What is not built yet
+
 - Greeks (Phase 3).
 - Strategy framework (Phase 5).
 - Web UI (Phase 6).
 
-Each of those plugs into the existing `EventBus` without changes to the ingest path — that is the point of the modular design.
+Each plugs into the existing `EventBus` without changes to earlier phases.

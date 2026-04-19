@@ -103,3 +103,35 @@ class OptionChainSnapshot(_Strict):
     expiry: date
     ticks: list[OptionTick]
     ts: int
+
+
+Timeframe = Literal["1m", "5m", "15m"]
+
+TIMEFRAME_MS: dict[str, int] = {
+    "1m": 60_000,
+    "5m": 300_000,
+    "15m": 900_000,
+}
+
+
+class IndexCandle(_Strict):
+    """OHLC candle built from index ticks. `volume` is 0 for spot indices;
+    tick_count is carried separately so the schema stays forward-compatible
+    if volume is populated from a real source later."""
+    index: Annotated[str, Field(min_length=1)]
+    timeframe: Timeframe
+    open_ts: Annotated[int, Field(ge=0)]        # bucket start, epoch ms (exchange-time aligned)
+    close_ts: Annotated[int, Field(ge=0)]       # bucket end, epoch ms
+    open: Annotated[float, Field(gt=0)]
+    high: Annotated[float, Field(gt=0)]
+    low: Annotated[float, Field(gt=0)]
+    close: Annotated[float, Field(gt=0)]
+    volume: Annotated[int, Field(ge=0)] = 0
+    tick_count: Annotated[int, Field(ge=0)] = 0
+
+    @field_validator("index")
+    @classmethod
+    def _valid_index(cls, v: str) -> str:
+        if v not in Index._value2member_map_:
+            raise ValueError(f"unknown index: {v}")
+        return v

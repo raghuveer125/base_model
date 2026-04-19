@@ -14,7 +14,7 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 
 from trading.config import get_settings
 from trading.logging_setup import get_logger
-from trading.schemas import IndexTick, OptionTick
+from trading.schemas import IndexCandle, IndexTick, OptionTick
 
 log = get_logger(__name__)
 SCHEMA_FILE = Path(__file__).with_name("storage_schema.sql")
@@ -94,6 +94,29 @@ class LiveStore:
         raw = self.r.get("tpp:token:fyers")
         return orjson.loads(raw) if raw else None
 
+    # ---- candle helpers ----
+
+    def set_in_progress_candle(self, index: str, timeframe: str, state: dict) -> None:
+        """Persist in-progress candle aggregator state for restart recovery."""
+        self.r.set(f"tpp:candle:in_progress:{index}:{timeframe}", orjson.dumps(state))
+
+    def get_in_progress_candle(self, index: str, timeframe: str) -> dict | None:
+        raw = self.r.get(f"tpp:candle:in_progress:{index}:{timeframe}")
+        return orjson.loads(raw) if raw else None
+
+    def clear_in_progress_candle(self, index: str, timeframe: str) -> None:
+        self.r.delete(f"tpp:candle:in_progress:{index}:{timeframe}")
+
+    def set_last_close_candle(self, candle: IndexCandle) -> None:
+        self.r.set(
+            f"tpp:candle:last_close:{candle.index}:{candle.timeframe}",
+            orjson.dumps(candle.model_dump(mode="json")),
+        )
+
+    def get_last_close_candle(self, index: str, timeframe: str) -> dict | None:
+        raw = self.r.get(f"tpp:candle:last_close:{index}:{timeframe}")
+        return orjson.loads(raw) if raw else None
+
 
 _pg_lock = threading.Lock()
 _pg_pool: ConnectionPool | None = None
@@ -152,6 +175,32 @@ def insert_option_ticks(rows: Sequence[OptionTick]) -> int:
             "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             [(t.index, t.strike, t.option_type, t.expiry, t.ltp, t.oi, t.oi_change,
               t.iv, t.ts_exchange, t.ts_received) for t in rows],
+        )
+        conn.commit()
+    return len(rows)
+
+
+@retry(reraise=True, stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.2, max=2),
+       retry=retry_if_exception_type(psycopg.OperationalError))
+def insert_candles(rows: Sequence[IndexCandle]) -> int:
+    """Batch-insert candles. Idempotent via UNIQUE (index, timeframe, open_ts)."""
+    if not rows:
+        return 0
+    with get_pg_pool().connection() as conn, conn.cursor() as cur:
+        cur.executemany(
+            "INSERT INTO index_candles "
+            "(index, timeframe, open_ts, close_ts, open, high, low, close, volume, tick_count) "
+            "VALUES (%s,%s, to_timestamp(%s / 1000.0), to_timestamp(%s / 1000.0), "
+            "%s,%s,%s,%s,%s,%s) "
+            "ON CONFLICT (index, timeframe, open_ts) DO UPDATE SET "
+            "close_ts = EXCLUDED.close_ts, open = EXCLUDED.open, high = EXCLUDED.high, "
+            "low = EXCLUDED.low, close = EXCLUDED.close, volume = EXCLUDED.volume, "
+            "tick_count = EXCLUDED.tick_count",
+            [
+                (c.index, c.timeframe, c.open_ts, c.close_ts,
+                 c.open, c.high, c.low, c.close, c.volume, c.tick_count)
+                for c in rows
+            ],
         )
         conn.commit()
     return len(rows)

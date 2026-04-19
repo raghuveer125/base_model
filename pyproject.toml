@@ -36,6 +36,7 @@ tpp-init-db     = "trading.scripts.init_db:main"
 tpp-ingest      = "trading.scripts.run_ingest:main"
 tpp-replay-wal  = "trading.scripts.replay_wal:main"
 tpp-retention   = "trading.scripts.run_retention:main"
+tpp-candles     = "trading.scripts.run_candles:main"
 
 [build-system]
 requires = ["hatchling"]
