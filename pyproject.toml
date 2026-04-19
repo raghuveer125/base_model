@@ -40,6 +40,8 @@ tpp-candles     = "trading.scripts.run_candles:main"
 tpp-greeks      = "trading.scripts.run_greeks:main"
 tpp-strategies  = "trading.scripts.run_strategies:main"
 tpp-backtest    = "trading.scripts.run_backtest:main"
+tpp-replay      = "trading.scripts.run_replay:main"
+tpp-replay-diff = "trading.scripts.diff_replay:main"
 
 [build-system]
 requires = ["hatchling"]

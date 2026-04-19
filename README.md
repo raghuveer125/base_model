@@ -1,7 +1,7 @@
 # Trading Plug&Play
 
 Modular real-time options analytics engine for **Nifty50**, **BankNifty**, **Sensex** via Fyers.
-Phases 1 (data pipeline), 2 (candles), 3 (Greeks) and 4 (strategy framework) are complete; UI is next.
+Phases 1 (data pipeline), 2 (candles), 3 (Greeks), 4 (strategy framework) and 5 (backtest + replay) are complete; UI is next.
 
 ## Design principles (non-negotiable)
 
@@ -89,7 +89,11 @@ src/trading/
   ingest.py              Orchestrator: WS → WAL → processors → Redis + PG + bus
   candles.py             CandleAggregator + CandleEngine (subscribes ticks.index.*)
   greeks.py              Black-Scholes + GreeksEngine (subscribes ticks.*)
-  backtest.py            BacktestRunner (WAL replay → candles + greeks → strategies)
+  backtest.py            BacktestRunner (legacy shim → ReplayEngine)
+  replay/
+    sources.py           EventSource protocol + WAL / Postgres / Merged sources
+    engine.py            ReplayEngine + deterministic run-id + per-run artifacts
+    diff.py              compare_summaries + compare_signal_jsonl
   strategies/
     base.py              Strategy ABC + StrategyContext + emit
     risk.py              CooldownManager + RiskEngine
@@ -107,6 +111,8 @@ src/trading/
     run_greeks.py        `tpp-greeks`
     run_strategies.py    `tpp-strategies`
     run_backtest.py      `tpp-backtest`
+    run_replay.py        `tpp-replay`
+    diff_replay.py       `tpp-replay-diff`
 tests/
   test_adapter.py
   test_wal_and_ingest_helpers.py
@@ -158,10 +164,13 @@ tpp-retention
 # 10. Replay from WAL (after outage / dry rebuild)
 tpp-replay-wal --date 2026-04-19
 
-# 11. Offline backtest / signal replay — no Redis, no Postgres required
-tpp-backtest --strategy heartbeat --date 2026-04-19
-tpp-backtest --strategy my_strat --no-cooldown --no-risk \
-             --output ./backtest_myrun.jsonl
+# 11. Offline replay (deterministic; WAL, Postgres, or merged)
+tpp-replay --source wal    --strategy heartbeat --date 2026-04-19
+tpp-replay --source pg     --strategy my_strat  --date 2026-04-19
+tpp-replay --source merged --strategy my_strat  --date 2026-04-19
+
+# 12. Compare two replay runs
+tpp-replay-diff ./logs/replays/<run_A> ./logs/replays/<run_B>
 ```
 
 ## Redis key schema
@@ -331,6 +340,52 @@ routes the emit through cooldown + risk + logger.
 
 `heartbeat` — observer only. Emits nothing; logs tick/candle/greek counts as a
 wiring check. Keep it in `STRATEGIES_ENABLED` in dev to verify the pipe is live.
+
+## Phase 5 — Backtesting + replay engine
+
+`tpp-replay` runs strategies over historical data deterministically. One engine,
+three swappable sources:
+
+| `--source` | reads                                            | emits                         |
+|------------|--------------------------------------------------|-------------------------------|
+| `wal`      | `{WAL_DIR}/*.jsonl`                              | `INDEX_TICK` + `OPTION_TICK`  |
+| `pg`       | `index_ticks`, `option_chain_data`, `index_candles` | `INDEX_TICK` + `OPTION_TICK` + `CANDLE` |
+| `merged`   | both above (heapq-merged by `(ts, seq, kind)`)   | all of the above              |
+
+The engine:
+1. dispatches every source event to every registered strategy via the same
+   `on_tick` / `on_candle_close` / `on_greeks` callbacks used in live mode;
+2. synthesizes missing events inline — `INDEX_TICK` → `CandleAggregator` →
+   `on_candle_close`; `OPTION_TICK` → `compute_greeks` (TTE anchored on tick ts)
+   → `on_greeks`. If the source already supplied `CANDLE`, aggregation is skipped
+   for that timeframe window;
+3. gates signals through `CooldownManager` → `RiskEngine` → `signals.jsonl`
+   (fsync), with optional `--no-cooldown` / `--no-risk` to measure raw intent;
+4. writes three artifacts per run to `{LOG_DIR}/replays/<run_id>/`:
+   `signals.jsonl`, `summary.json`, `manifest.json`.
+
+### Deterministic `run_id`
+
+Each run is identified by a 16-hex SHA-256 of:
+
+- source fingerprint (WAL file list + sizes, or PG ts range + flags, or the merge thereof)
+- sorted strategy names
+- sorted indices
+- sorted timeframes
+- atm range, risk-free rate, cooldown seconds, cooldown/risk toggles
+
+**Same inputs → same `run_id` → byte-identical `signals.jsonl` and `summary.json`.**
+This is enforced by `test_replay::test_two_runs_on_same_inputs_produce_same_run_id_and_signals`.
+
+### Comparing runs
+
+```bash
+tpp-replay-diff ./logs/replays/<A> ./logs/replays/<B>
+```
+
+Prints a JSON diff — flat-keyed summary deltas plus signal-level `only_in_a` /
+`only_in_b` / `differing` with samples. Exit 0 iff fully identical — use in CI
+to guarantee a refactor doesn't change strategy output.
 
 ## Backtest / signal replay
 
