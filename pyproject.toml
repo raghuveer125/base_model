@@ -45,6 +45,7 @@ tpp-replay-diff = "trading.scripts.diff_replay:main"
 tpp-ui          = "trading.scripts.run_ui:main"
 tpp-orders      = "trading.scripts.run_orders:main"
 tpp-backup      = "trading.scripts.run_backup:main"
+tpp-up          = "trading.scripts.run_all:main"
 
 [build-system]
 requires = ["hatchling"]

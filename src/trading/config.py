@@ -107,6 +107,9 @@ class Settings(BaseSettings):
     webhook_url: str = ""
     webhook_headers_json: str = ""          # e.g. '{"Authorization":"Bearer …"}'
 
+    # Expiries (for tpp-ingest / tpp-up; csv of INDEX=YYYY-MM-DD)
+    expiries: str = ""                      # e.g. NIFTY50=2026-04-30,BANKNIFTY=2026-04-30
+
     # Orders (Phase 7 — paper first)
     orders_mode: str = "paper"              # paper | live
     paper_slippage_bps: float = 10.0
