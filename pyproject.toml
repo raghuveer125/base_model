@@ -1,0 +1,57 @@
+[project]
+name = "trading-plug-play"
+version = "0.1.0"
+description = "Modular real-time options analytics engine (Fyers) — Phase 1: data pipeline"
+requires-python = ">=3.11"
+readme = "README.md"
+dependencies = [
+    "fyers-apiv3>=3.1.7",
+    "redis[hiredis]>=5.0.8",
+    "psycopg[binary,pool]>=3.2.1",
+    "pydantic>=2.8.0",
+    "pydantic-settings>=2.4.0",
+    "structlog>=24.4.0",
+    "python-dotenv>=1.0.1",
+    "pyotp>=2.9.0",
+    "requests>=2.32.3",
+    "tenacity>=9.0.0",
+    "orjson>=3.10.7",
+    "httpx>=0.27.2",
+    "click>=8.1.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.2",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.6.2",
+    "mypy>=1.11.1",
+    "types-requests>=2.32.0",
+    "fakeredis>=2.24.1",
+]
+
+[project.scripts]
+tpp-auth        = "trading.scripts.auth_bootstrap:main"
+tpp-init-db     = "trading.scripts.init_db:main"
+tpp-ingest      = "trading.scripts.run_ingest:main"
+tpp-replay-wal  = "trading.scripts.replay_wal:main"
+tpp-retention   = "trading.scripts.run_retention:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/trading"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "N", "SIM", "RUF", "ASYNC"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Secrets & local config
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Runtime state
+wal/
+data/
+logs/
+*.log
+fyers_token.json
+fyers_access_token.txt
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker volumes (if bind-mounted)
+.docker-data/

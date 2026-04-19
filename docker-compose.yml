@@ -1,0 +1,48 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: tpp-redis
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --save
+      - "60"
+      - "1000"
+      - --maxmemory
+      - "1gb"
+      - --maxmemory-policy
+      - "allkeys-lru"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: tpp-postgres
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5432:5432"
+    environment:
+      POSTGRES_USER: tpp
+      POSTGRES_PASSWORD: tpp
+      POSTGRES_DB: tpp
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tpp -d tpp"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  redis_data:
+  pg_data:
