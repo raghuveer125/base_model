@@ -114,11 +114,16 @@ class Settings(BaseSettings):
     paper_flat_fee: float = 20.0
     orders_default_qty: int = 1
 
+    # Backups (WAL tar + pg_dump)
+    backup_dir: Path = Path("./backups")
+    backup_retention_days: int = 7
+    backup_pg_dump_cmd: str = 'pg_dump -d "{dsn}" --no-owner --no-privileges'
+
     @property
     def strategy_list(self) -> list[str]:
         return [s.strip() for s in self.strategies_enabled.split(",") if s.strip()]
 
-    @field_validator("wal_dir", "log_dir", mode="before")
+    @field_validator("wal_dir", "log_dir", "backup_dir", mode="before")
     @classmethod
     def _coerce_path(cls, v: object) -> Path:
         return Path(str(v))

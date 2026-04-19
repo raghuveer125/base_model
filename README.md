@@ -594,6 +594,46 @@ access token (same `tpp:token:fyers` used by ingest), then point the CLI at
 it via `ORDERS_MODE=live`. Everything downstream (book, PnL, pub/sub,
 persistence) stays identical.
 
+## Backups (WAL + Postgres snapshots)
+
+Operational safety net. `tpp-backup` produces two artifact types under
+`BACKUP_DIR`:
+
+```
+backups/
+  wal-YYYYMMDDTHHMMSSZ.tar.gz     tarball of the live WAL jsonl segments
+  pg-YYYYMMDDTHHMMSSZ.sql.gz      gzipped pg_dump of the database
+```
+
+Retention is mtime-based — files older than `BACKUP_RETENTION_DAYS` (default 7)
+are removed by the same invocation.
+
+```bash
+tpp-backup                              # WAL + DB + prune
+tpp-backup --no-db                      # WAL only (fast, no pg_dump needed)
+tpp-backup --list                       # list existing snapshots
+tpp-backup --no-wal --no-prune          # DB-only, keep everything
+```
+
+The DB snapshot shells out to `pg_dump` via `BACKUP_PG_DUMP_CMD` (template with
+`{dsn}`). If `pg_dump` isn't on the host PATH (e.g. docker-compose stack), swap
+the command to dispatch through the container:
+
+```env
+BACKUP_PG_DUMP_CMD=docker compose exec -T postgres pg_dump -U tpp tpp
+```
+
+Schedule daily via cron / Windows Task Scheduler — the CLI exits 1 on any
+failure so the scheduler can detect it.
+
+### Restore path
+
+- **WAL:** `tar -xzf backups/wal-<ts>.tar.gz -C /tmp/restore`, point `WAL_DIR`
+  at the extracted folder, run `tpp-replay-wal --date YYYY-MM-DD` to rebuild
+  Redis + Postgres state.
+- **DB:** `gunzip -c backups/pg-<ts>.sql.gz | psql -d "$POSTGRES_DSN"`, then
+  restart live services.
+
 ## What is not built yet
 
 - Live Fyers order placement (stub only — `FyersExecutor` raises).
