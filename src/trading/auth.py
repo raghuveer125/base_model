@@ -28,8 +28,8 @@ from trading.storage import LiveStore
 
 log = get_logger(__name__)
 
-AUTH_BASE = "https://api-t2.fyers.in"
-API_BASE = "https://api.fyers.in"
+AUTH_BASE = "https://api-t2.fyers.in"   # TOTP auto-login flow (vagator)
+API_BASE = "https://api-t1.fyers.in"    # OAuth + token exchange (APIv3)
 
 TOKEN_SOFT_TTL_S = 6 * 3600
 
@@ -164,3 +164,116 @@ class FyersAuth:
 
 def ensure_access_token(force_refresh: bool = False) -> str:
     return FyersAuth().get_access_token(force_refresh=force_refresh)
+
+
+def manual_auth_url() -> str:
+    """Build the Fyers OAuth authorize URL for browser login (APIv3)."""
+    s = get_settings()
+    from urllib.parse import urlencode
+    qs = urlencode({
+        "client_id": s.fyers_client_id,
+        "redirect_uri": s.fyers_redirect_uri,
+        "response_type": "code",
+        "state": "sample",
+    })
+    return f"{API_BASE}/api/v3/generate-authcode?{qs}"
+
+
+def capture_auth_code_via_loopback(timeout_s: int = 180) -> str:
+    """Open the Fyers auth URL in a browser, catch the redirect on
+    `FYERS_REDIRECT_URI`'s host:port, return the auth_code.
+
+    Uses the OAuth loopback-interface flow: a one-shot HTTP server binds
+    to the redirect host/port, serves whatever GET hits '/' or any path,
+    and extracts the `auth_code` query param.
+    """
+    import threading
+    import time
+    import webbrowser
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from urllib.parse import parse_qs, urlparse
+
+    s = get_settings()
+    uri = urlparse(s.fyers_redirect_uri)
+    host = uri.hostname or "127.0.0.1"
+    port = uri.port or 8080
+
+    captured: dict[str, str] = {}
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 — stdlib contract
+            qs = parse_qs(urlparse(self.path).query)
+            code = (qs.get("auth_code") or qs.get("code") or [None])[0]
+            err = qs.get("error", [None])[0]
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            if code:
+                captured["auth_code"] = code
+                self.wfile.write(
+                    b"<html><body style='font-family:sans-serif;background:#0e1116;"
+                    b"color:#3fb950;padding:2rem'><h2>auth_code captured</h2>"
+                    b"<p>You can close this tab and return to the terminal.</p>"
+                    b"</body></html>"
+                )
+            elif err:
+                captured["error"] = err
+                self.wfile.write(
+                    f"<html><body><h2>Login error</h2><pre>{err}</pre></body></html>"
+                    .encode()
+                )
+            else:
+                self.wfile.write(b"<html><body>waiting...</body></html>")
+
+        def log_message(self, *_a, **_kw):  # silence default stdout spam
+            return
+
+    server = HTTPServer((host, port), _Handler)
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    log.info("loopback_listening", host=host, port=port)
+
+    url = manual_auth_url()
+    try:
+        webbrowser.open(url)
+    except Exception:  # noqa: BLE001
+        pass  # user can open it manually
+    log.info("loopback_browser_opened", url=url)
+
+    deadline = time.time() + timeout_s
+    try:
+        while time.time() < deadline:
+            if "auth_code" in captured or "error" in captured:
+                break
+            time.sleep(0.25)
+    finally:
+        try:
+            server.shutdown()
+            server.server_close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    if "error" in captured:
+        raise FyersAuthError(f"login error: {captured['error']}")
+    if "auth_code" not in captured:
+        raise FyersAuthError(
+            f"timeout after {timeout_s}s waiting for auth_code — "
+            f"if login succeeded, re-run with --auth-code <value>"
+        )
+    return captured["auth_code"]
+
+
+def exchange_auth_code(auth_code: str) -> str:
+    """Exchange an auth_code (captured from the redirect URL) for an access token
+    and cache it in Redis. Use when TOTP auto-login is unavailable."""
+    import time
+    auth = FyersAuth()
+    with httpx.Client(timeout=20.0) as client:
+        token = auth._exchange_auth_code(client, auth_code)
+    now_ms = int(time.time() * 1000)
+    auth.store.set_token({
+        "access_token": token,
+        "fetched_at": now_ms,
+        "expires_at": now_ms + TOKEN_SOFT_TTL_S * 1000,
+    })
+    return token
