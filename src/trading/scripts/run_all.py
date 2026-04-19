@@ -12,8 +12,7 @@ Starts all services as subprocesses in the correct order:
 Ctrl-C shuts everything down gracefully in reverse order.
 
 Usage:
-  tpp-up                                     # reads EXPIRIES from .env
-  tpp-up --expiry NIFTY50=2026-04-30         # override specific expiry
+  tpp-up                                     # expiries auto-fetched from Fyers
   tpp-up --no-orders                          # skip order engine
   tpp-up --no-docker                          # Docker already running
 """
@@ -29,7 +28,6 @@ from pathlib import Path
 
 import click
 
-from trading.config import get_settings
 from trading.logging_setup import configure_logging, get_logger
 
 
@@ -162,29 +160,7 @@ class ProcessManager:
             self.shutdown()
 
 
-def _resolve_expiries(cli_expiries: tuple[str, ...], log) -> list[str]:  # noqa: ANN001
-    """Resolve expiry pairs from CLI flags or EXPIRIES env var."""
-    if cli_expiries:
-        return list(cli_expiries)
-    # Fall back to EXPIRIES setting (csv of INDEX=YYYY-MM-DD)
-    raw = get_settings().expiries.strip()
-    if not raw:
-        log.error(
-            "no_expiries",
-            hint="Set EXPIRIES in .env (e.g. EXPIRIES=NIFTY50=2026-04-30,BANKNIFTY=2026-04-30) "
-                 "or pass --expiry flags",
-        )
-        sys.exit(2)
-    pairs = [p.strip() for p in raw.split(",") if p.strip()]
-    log.info("expiries_from_env", expiries=pairs)
-    return pairs
-
-
 @click.command()
-@click.option(
-    "--expiry", "expiries", multiple=True, default=(),
-    help="INDEX=YYYY-MM-DD (repeat for each index). Falls back to EXPIRIES in .env.",
-)
 @click.option("--no-docker", is_flag=True, help="Skip Docker health check / startup.")
 @click.option("--no-orders", is_flag=True, help="Skip the order engine.")
 @click.option("--no-ui", is_flag=True, help="Skip the web UI.")
@@ -193,7 +169,6 @@ def _resolve_expiries(cli_expiries: tuple[str, ...], log) -> list[str]:  # noqa:
     help="Override STRATEGIES_ENABLED (repeat for multiple).",
 )
 def main(
-    expiries: tuple[str, ...],
     no_docker: bool,
     no_orders: bool,
     no_ui: bool,
@@ -211,13 +186,8 @@ def main(
     else:
         log.info("docker_skipped")
 
-    # ── 2. Resolve expiries ────────────────────────────────────
-    resolved = _resolve_expiries(expiries, log)
-
-    # ── 3. Build subprocess commands ───────────────────────────
-    expiry_args: list[str] = []
-    for e in resolved:
-        expiry_args += ["--expiry", e]
+    # ── 2. Build subprocess commands ───────────────────────────
+    # Ingest auto-fetches expiries from Fyers — no flags needed
 
     strat_args: list[str] = []
     for s in strategies:
@@ -239,7 +209,7 @@ def main(
     # ── 3. Start services in order ─────────────────────────────
     entry = "src/trading/scripts"
 
-    mgr.start("ingest", [f"{entry}/run_ingest.py"] + expiry_args, delay=3)
+    mgr.start("ingest", [f"{entry}/run_ingest.py"], delay=3)
     mgr.start("candles", [f"{entry}/run_candles.py"], delay=2)
     mgr.start("greeks", [f"{entry}/run_greeks.py"], delay=2)
     mgr.start("strategies", [f"{entry}/run_strategies.py"] + strat_args, delay=2)

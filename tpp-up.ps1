@@ -9,7 +9,8 @@
     4. Initialises the database schema (tpp-init-db)
     5. Authenticates with Fyers (tpp-auth --manual)
     6. Launches all services in separate windows:
-         ingest -> candles -> greeks -> strategies -> orders -> ui
+         ingest (auto-fetches expiries from Fyers) -> candles ->
+         greeks -> strategies -> orders -> ui
     7. Ctrl+C in this window shuts everything down
 
 .EXAMPLE
@@ -161,25 +162,10 @@ if ($SkipAuth) {
     Write-Ok "Token cached in Redis"
 }
 
-# ── 6. Read expiries from .env ─────────────────────────────────
-Write-Step 6 "Reading expiries from .env"
-$expiries = @()
-$envContent = Get-Content ".\.env" -ErrorAction SilentlyContinue
-$expLine = $envContent | Where-Object { $_ -match "^EXPIRIES=" }
-if ($expLine) {
-    $raw = ($expLine -split "=", 2)[1].Trim()
-    $expiries = $raw -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }
-}
-if ($expiries.Count -eq 0) {
-    Write-Fail "No EXPIRIES found in .env. Add e.g.: EXPIRIES=NIFTY50=2026-04-30,BANKNIFTY=2026-04-30"
-}
-$expiryArgs = @()
-foreach ($e in $expiries) { $expiryArgs += "--expiry"; $expiryArgs += $e }
-Write-Ok "Expiries: $($expiries -join ', ')"
-
-# ── 7. Launch services ────────────────────────────────────────
+# ── 6. Launch services ─────────────────────────────────────────
+# Expiries are auto-fetched from Fyers symbol master by tpp-ingest
 Write-Host ""
-Write-Step 7 "Starting services"
+Write-Step 6 "Starting services (expiries auto-fetched from Fyers)"
 
 $venvPython = "$PSScriptRoot\.venv\Scripts\python.exe"
 
@@ -199,35 +185,35 @@ function Start-Service ($name, $module, [string[]]$svcArgs) {
     Write-Ok "$name started (PID $($proc.Id))"
 }
 
-# 7a. Ingest
-Start-Service "ingest" "trading.scripts.run_ingest" $expiryArgs
+# 6a. Ingest (auto-fetches expiries from Fyers)
+Start-Service "ingest" "trading.scripts.run_ingest" @()
 
-# 7b. Candles
+# 6b. Candles
 Start-Sleep -Seconds 1
 Start-Service "candles" "trading.scripts.run_candles" @()
 
-# 7c. Greeks
+# 6c. Greeks
 Start-Sleep -Seconds 1
 Start-Service "greeks" "trading.scripts.run_greeks" @()
 
-# 7d. Strategies
+# 6d. Strategies
 Start-Sleep -Seconds 1
 # Uses STRATEGIES_ENABLED from .env by default
 Start-Service "strategies" "trading.scripts.run_strategies" @()
 
-# 7e. Orders
+# 6e. Orders
 if (-not $SkipOrders) {
     Start-Sleep -Seconds 1
     Start-Service "orders" "trading.scripts.run_orders" @()
 }
 
-# 7f. UI
+# 6f. UI
 if (-not $SkipUI) {
     Start-Sleep -Seconds 1
     Start-Service "ui" "trading.scripts.run_ui" @()
 }
 
-# ── 8. Summary ─────────────────────────────────────────────────
+# ── 7. Summary ─────────────────────────────────────────────────
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Green
 Write-Host "  TPP engine is UP" -ForegroundColor Green
@@ -238,12 +224,12 @@ Write-Host "  Services : $svcNames" -ForegroundColor White
 if (-not $SkipUI) {
     Write-Host "  Dashboard: http://127.0.0.1:8088" -ForegroundColor White
 }
-Write-Host "  Expiries : $($expiries -join ', ')" -ForegroundColor White
+Write-Host "  Expiries : auto-fetched from Fyers" -ForegroundColor White
 Write-Host ""
 Write-Host "  Press Ctrl+C to shut down all services" -ForegroundColor Yellow
 Write-Host ""
 
-# ── 9. Monitor — watch for crashes, Ctrl+C to exit ────────────
+# ── 8. Monitor — watch for crashes, Ctrl+C to exit ────────────
 try {
     while ($true) {
         foreach ($child in $script:Children) {

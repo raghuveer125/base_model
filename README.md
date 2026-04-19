@@ -148,10 +148,8 @@ tpp-init-db
 tpp-auth
 
 # 5. Run ingest (market hours, 09:15–15:30 IST)
-tpp-ingest \
-  --expiry NIFTY50=2026-04-30 \
-  --expiry BANKNIFTY=2026-04-30 \
-  --expiry SENSEX=2026-04-25
+tpp-ingest                                # expiries auto-fetched from Fyers
+# tpp-ingest --expiry NIFTY50=2026-04-30  # or override manually
 
 # 6. Run candle engine in a separate shell (independent process)
 tpp-candles
@@ -183,6 +181,31 @@ tpp-ui
 # then open http://127.0.0.1:8088/
 ```
 
+## One-command startup
+
+```bash
+tpp-up          # brings up Docker, all services, dashboard — zero config
+```
+
+Or via PowerShell (handles Docker Desktop launch + auth):
+
+```powershell
+.\tpp-up.ps1                  # full boot: Docker → auth → all services
+.\tpp-up.ps1 -SkipAuth        # token still fresh from earlier
+.\tpp-up.ps1 -SkipDocker      # Docker already running
+```
+
+## Expiry auto-fetch
+
+Expiry dates are fetched automatically from the Fyers symbol master
+(`public.fyers.in/sym_details/{EXCHANGE}_FO.csv`). No manual config needed.
+
+- On startup, `tpp-ingest` calls `get_expiries()` which checks Redis cache first
+- If not cached (or expired), downloads the Fyers symbol master CSV and finds
+  the nearest expiry ≥ today for each index
+- Results are cached in Redis (`tpp:expiry:{INDEX}`, 12-hour TTL)
+- You can still override with `tpp-ingest --expiry NIFTY50=2026-04-30` if needed
+
 ## Redis key schema
 
 | key                                              | type   | value                          |
@@ -197,6 +220,7 @@ tpp-ui
 | `tpp:candle:in_progress:{INDEX}:{TF}`            | string | in-progress aggregator state   |
 | `tpp:candle:last_close:{INDEX}:{TF}`             | string | last closed `IndexCandle` JSON |
 | `tpp:greeks:{INDEX}:{EXPIRY}:{STRIKE}:{TYPE}`    | string | latest `OptionGreeks` JSON     |
+| `tpp:expiry:{INDEX}`                             | string | nearest expiry ISO date (auto) |
 
 `{EXPIRY}` = ISO `YYYY-MM-DD`. `{TYPE}` = `CE` or `PE`.
 

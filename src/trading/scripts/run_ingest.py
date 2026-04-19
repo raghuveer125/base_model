@@ -1,7 +1,8 @@
 """`tpp-ingest` — start the Fyers WS ingest orchestrator.
 
 Usage:
-  tpp-ingest --expiry NIFTY50=2026-04-30 --expiry BANKNIFTY=2026-04-30 --expiry SENSEX=2026-04-25
+  tpp-ingest                                 # auto-fetch expiries from Fyers
+  tpp-ingest --expiry NIFTY50=2026-04-30     # manual override
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import click
 
 from trading.auth import ensure_access_token
 from trading.config import get_settings
+from trading.expiry import get_expiries
 from trading.ingest import Orchestrator, install_signal_handlers
 from trading.logging_setup import configure_logging, get_logger
 from trading.storage import ensure_schema, get_redis
@@ -33,18 +35,28 @@ def _parse_expiry(pairs: tuple[str, ...]) -> dict[str, date]:
     "--expiry",
     "expiries",
     multiple=True,
-    required=True,
-    help="INDEX=YYYY-MM-DD (repeat for each index).",
+    default=(),
+    help="INDEX=YYYY-MM-DD (repeat for each index). Auto-fetched from Fyers if omitted.",
 )
 def main(expiries: tuple[str, ...]) -> None:
     configure_logging()
     log = get_logger("tpp-ingest")
     try:
-        exp_map = _parse_expiry(expiries)
         get_redis().ping()
         ensure_schema()
         ensure_access_token()
         indices = get_settings().index_list
+
+        # Resolve expiries: CLI flags > auto-fetch from Fyers
+        if expiries:
+            exp_map = _parse_expiry(expiries)
+        else:
+            log.info("auto_fetching_expiries")
+            exp_map = get_expiries(indices)
+
+        for idx, exp in exp_map.items():
+            log.info("expiry_active", index=idx, expiry=exp.isoformat())
+
         orc = Orchestrator(indices=indices, expiries=exp_map)
         install_signal_handlers(orc)
         orc.run()
