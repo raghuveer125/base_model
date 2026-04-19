@@ -451,6 +451,18 @@ no writes into the pipeline.
   candles) dim with a "live-only" note; the ws status indicator reads "replay";
   the banner above the chain shows `run_id · source · strategies · ts range`.
   Switching back to **Live** restores WS streaming.
+- **URL state** — mode, run, and index are reflected in the query string so a
+  view is shareable/bookmarkable. The URL updates on every tab/mode/run change
+  via `history.replaceState`, and `popstate` (back/forward) restores the state.
+  Accepts tolerant short forms: `?index=NIFTY` resolves to `NIFTY50`; `?tab=metrics`
+  or `?tab=replay` opens those tabs.
+
+  ```
+  /?index=NIFTY50                               — live Nifty
+  /?mode=replay&run_id=abc123def4567890&index=BANKNIFTY
+  /?tab=metrics
+  /?tab=replay
+  ```
 - **Frontend tabs:**
   - **Nifty / BankNifty / Sensex** — in Live mode: live spot + option chain
     (LTP + Δ/Γ/Θ/ν/IV, ATM highlighted) + 1m candle feed + signals feed,

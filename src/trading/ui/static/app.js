@@ -40,7 +40,75 @@
     $("mode-replay").addEventListener("click", () => setMode("replay"));
     $("replay-picker").addEventListener("change", (e) => onReplayRunSelect(e.target.value));
     $("replay-banner-clear").addEventListener("click", () => setMode("live"));
-    if (state.indices.length) switchTab(state.indices[0]);
+    window.addEventListener("popstate", () => applyUrlState());
+    await applyUrlState({ first: true });
+  }
+
+  // ----- URL state -----
+
+  function resolveIndexParam(raw) {
+    if (!raw) return null;
+    const up = String(raw).toUpperCase();
+    if (state.indices.includes(up)) return up;
+    // tolerant prefix match: "NIFTY" → "NIFTY50", "BANK" → "BANKNIFTY"
+    const pref = state.indices.find((i) => i.startsWith(up));
+    return pref || null;
+  }
+
+  function readUrlState() {
+    const p = new URLSearchParams(location.search);
+    const mode = p.get("mode") === "replay" ? "replay" : "live";
+    const run_id = p.get("run_id") || null;
+    const indexRaw = p.get("index");
+    const index = resolveIndexParam(indexRaw);
+    const tab = p.get("tab");
+    return { mode, run_id, index, tab };
+  }
+
+  function writeUrlState() {
+    const p = new URLSearchParams();
+    if (state.mode === "replay") p.set("mode", "replay");
+    if (state.mode === "replay" && state.replayMode.runId) {
+      p.set("run_id", state.replayMode.runId);
+    }
+    if (state.current === METRICS_TAB) p.set("tab", "metrics");
+    else if (state.current === REPLAY_TAB) p.set("tab", "replay");
+    else if (state.current) p.set("index", state.current);
+    const qs = p.toString();
+    const next = qs ? `${location.pathname}?${qs}` : location.pathname;
+    if (next !== location.pathname + location.search) {
+      history.replaceState(null, "", next);
+    }
+  }
+
+  async function applyUrlState({ first = false } = {}) {
+    const { mode, run_id, index, tab } = readUrlState();
+
+    // Mode first so replay artifacts are preloaded before rendering the tab.
+    if (mode === "replay") {
+      await setMode("replay", { skipUrl: true, skipTabRender: true });
+      if (run_id) {
+        await populateReplayPicker();
+        const picker = $("replay-picker");
+        if ([...picker.options].some((o) => o.value === run_id)) {
+          picker.value = run_id;
+        }
+        await onReplayRunSelect(run_id, { skipUrl: true });
+      }
+    } else if (!first) {
+      // popstate back to live
+      await setMode("live", { skipUrl: true, skipTabRender: true });
+    }
+
+    let target;
+    if (tab === "metrics") target = METRICS_TAB;
+    else if (tab === "replay") target = REPLAY_TAB;
+    else if (index) target = index;
+    else target = state.indices[0];
+
+    if (target) await switchTab(target, { skipUrl: true });
+
+    writeUrlState();
   }
 
   function defaultExpiryISO() {
@@ -68,7 +136,7 @@
     }
   }
 
-  async function switchTab(key) {
+  async function switchTab(key, opts = {}) {
     // Tear down everything the previous tab owned.
     if (state.ws) { try { state.ws.close(); } catch (e) {} state.ws = null; }
     if (state.reconnectTimer) { clearTimeout(state.reconnectTimer); state.reconnectTimer = null; }
@@ -78,30 +146,34 @@
     renderTabs();
     showView(key);
 
-    if (key === METRICS_TAB) {
-      startMetricsPolling();
-      return;
-    }
-    if (key === REPLAY_TAB) {
-      loadReplayList();
-      return;
-    }
-    // Index tab
-    state.chain = {};
-    $("chain-tbody").innerHTML = "";
-    $("candles").innerHTML = "";
-    $("signals").innerHTML = "";
-    $("spot").textContent = "—";
-    $("last-seen").textContent = "—";
+    try {
+      if (key === METRICS_TAB) {
+        startMetricsPolling();
+        return;
+      }
+      if (key === REPLAY_TAB) {
+        loadReplayList();
+        return;
+      }
+      // Index tab
+      state.chain = {};
+      $("chain-tbody").innerHTML = "";
+      $("candles").innerHTML = "";
+      $("signals").innerHTML = "";
+      $("spot").textContent = "—";
+      $("last-seen").textContent = "—";
 
-    if (state.mode === "replay") {
-      renderIndexReplay(key);
-      return;
+      if (state.mode === "replay") {
+        renderIndexReplay(key);
+        return;
+      }
+      // live
+      await fetchState(key);
+      await loadChain();
+      connectWs(key);
+    } finally {
+      if (!opts.skipUrl) writeUrlState();
     }
-    // live
-    await fetchState(key);
-    await loadChain();
-    connectWs(key);
   }
 
   function showView(key) {
@@ -433,8 +505,11 @@
 
   // ----- live / replay mode toggle -----
 
-  async function setMode(mode) {
-    if (mode === state.mode) return;
+  async function setMode(mode, opts = {}) {
+    if (mode === state.mode) {
+      if (!opts.skipUrl) writeUrlState();
+      return;
+    }
     state.mode = mode;
     $("mode-live").classList.toggle("active", mode === "live");
     $("mode-replay").classList.toggle("active", mode === "replay");
@@ -444,19 +519,20 @@
       await populateReplayPicker();
       applyReplayBanner();
       applyLiveOnlyPanelsDim(true);
-      // If a run is already selected, re-render the active index tab against it.
-      if (state.current && !state.current.startsWith("__") && state.replayMode.runId) {
+      if (!opts.skipTabRender &&
+          state.current && !state.current.startsWith("__") &&
+          state.replayMode.runId) {
         renderIndexReplay(state.current);
       }
     } else {
-      // leaving replay mode: drop the signals overlay
       $("replay-banner").hidden = true;
       applyLiveOnlyPanelsDim(false);
-      // if we were on an index tab, reconnect live
-      if (state.current && !state.current.startsWith("__")) {
-        switchTab(state.current);
+      if (!opts.skipTabRender &&
+          state.current && !state.current.startsWith("__")) {
+        await switchTab(state.current, { skipUrl: true });
       }
     }
+    if (!opts.skipUrl) writeUrlState();
   }
 
   function applyLiveOnlyPanelsDim(on) {
@@ -520,7 +596,7 @@
     }
   }
 
-  async function onReplayRunSelect(runId) {
+  async function onReplayRunSelect(runId, opts = {}) {
     if (!runId) {
       state.replayMode.runId = null;
       state.replayMode.signals = [];
@@ -530,6 +606,7 @@
       if (state.current && !state.current.startsWith("__")) {
         renderIndexReplay(state.current);
       }
+      if (!opts.skipUrl) writeUrlState();
       return;
     }
     try {
@@ -552,6 +629,7 @@
     if (state.current && !state.current.startsWith("__")) {
       renderIndexReplay(state.current);
     }
+    if (!opts.skipUrl) writeUrlState();
   }
 
   function renderIndexReplay(idx) {
