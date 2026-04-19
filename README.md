@@ -89,6 +89,7 @@ src/trading/
   ingest.py              Orchestrator: WS → WAL → processors → Redis + PG + bus
   candles.py             CandleAggregator + CandleEngine (subscribes ticks.index.*)
   greeks.py              Black-Scholes + GreeksEngine (subscribes ticks.*)
+  backtest.py            BacktestRunner (WAL replay → candles + greeks → strategies)
   strategies/
     base.py              Strategy ABC + StrategyContext + emit
     risk.py              CooldownManager + RiskEngine
@@ -105,6 +106,7 @@ src/trading/
     run_candles.py       `tpp-candles`
     run_greeks.py        `tpp-greeks`
     run_strategies.py    `tpp-strategies`
+    run_backtest.py      `tpp-backtest`
 tests/
   test_adapter.py
   test_wal_and_ingest_helpers.py
@@ -155,6 +157,11 @@ tpp-retention
 
 # 10. Replay from WAL (after outage / dry rebuild)
 tpp-replay-wal --date 2026-04-19
+
+# 11. Offline backtest / signal replay — no Redis, no Postgres required
+tpp-backtest --strategy heartbeat --date 2026-04-19
+tpp-backtest --strategy my_strat --no-cooldown --no-risk \
+             --output ./backtest_myrun.jsonl
 ```
 
 ## Redis key schema
@@ -325,9 +332,37 @@ routes the emit through cooldown + risk + logger.
 `heartbeat` — observer only. Emits nothing; logs tick/candle/greek counts as a
 wiring check. Keep it in `STRATEGIES_ENABLED` in dev to verify the pipe is live.
 
+## Backtest / signal replay
+
+`tpp-backtest` drives the strategy framework from historical data **without**
+touching Redis or Postgres — it's the same event contract, fed from disk.
+
+```
+WAL jsonl → normalize → IndexTick / OptionTick
+                     │
+                     ├── index ticks → CandleAggregator (inline) → on_candle_close
+                     ├── option ticks → compute_greeks(...) (inline) → on_greeks
+                     │
+                     └── strategy.emit(...) → cooldown → risk → backtest_signals.jsonl
+```
+
+Guarantees:
+- **Deterministic replay:** bucket alignment and TTE are anchored on each tick's
+  `ts_exchange`, never wall clock. Running the same WAL + same strategies twice
+  produces byte-identical signal jsonl.
+- **Framework parity:** strategies never know whether they're live or backtest;
+  `on_tick` / `on_candle_close` / `on_greeks` deliver the same Pydantic models.
+- **Isolation:** BacktestSignalLogger writes jsonl only. No Postgres writes, no
+  pub/sub publishes, no mutation of live Redis state.
+- **Flags:** `--no-cooldown` / `--no-risk` let you measure raw strategy intent
+  before guardrails; leaving them on reproduces live gating.
+- **Summary:** on completion the CLI prints counts of ticks / candles / Greeks
+  / emitted-vs-suppressed signals and the ts range — useful for diffing strategy
+  variants.
+
 ## What is not built yet
 
 - Web UI (Phase 6).
-- Order execution (deliberately out of scope for Phase 4).
+- Order execution (deliberately out of scope).
 
 Each plugs into the existing `EventBus` without changes to earlier phases.

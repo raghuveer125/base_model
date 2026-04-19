@@ -65,13 +65,15 @@ class RiskEngine:
             return False, f"index {sig.index!r} not allowed"
         if sig.action not in self.allowed_actions:
             return False, f"action {sig.action!r} not allowed"
-        now = now_ms()
+        # Anchor windows on sig.ts so replay (historical timestamps) works identically
+        # to live (sig.ts is now_ms() at emit time); behavior unchanged in production.
+        anchor = sig.ts
         with self._lock:
             q = self._events_by_strategy.setdefault(sig.strategy, deque())
-            day_cutoff = now - self._DAY_MS
+            day_cutoff = anchor - self._DAY_MS
             while q and q[0] < day_cutoff:
                 q.popleft()
-            hour_cutoff = now - self._HOUR_MS
+            hour_cutoff = anchor - self._HOUR_MS
             in_hour = sum(1 for t in q if t >= hour_cutoff)
             in_day = len(q)
             if in_hour >= self.max_per_hour:
