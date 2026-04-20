@@ -63,6 +63,22 @@ def indices() -> list[str]:
     return get_settings().index_list
 
 
+@router.get("/expiries")
+def expiries() -> dict[str, str]:
+    """Nearest expiry per configured index, as ISO date strings.
+
+    Sourced from Redis cache (filled by trading.expiry.get_expiries from the
+    Fyers symbol master). Returns an empty dict if the fetch fails so the UI
+    can fall back to its own default.
+    """
+    try:
+        from trading.expiry import get_expiries
+        return {idx: exp.isoformat() for idx, exp in get_expiries().items()}
+    except Exception as e:
+        log.warning("expiries_fetch_failed", error=str(e))
+        return {}
+
+
 @router.get("/state/{index}")
 def state(index: str) -> dict:
     _check_index(index)

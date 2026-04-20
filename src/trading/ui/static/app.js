@@ -9,6 +9,7 @@
 
   const state = {
     indices: [],
+    expiries: {},   // { INDEX: "YYYY-MM-DD" } — from /api/expiries (Fyers symbol master)
     current: null,
     ws: null,
     reconnectTimer: null,
@@ -34,8 +35,13 @@
     } catch (e) {
       state.indices = ["NIFTY50", "BANKNIFTY", "SENSEX"];
     }
+    try {
+      const res = await fetch("/api/expiries");
+      state.expiries = await res.json();
+    } catch (e) {
+      state.expiries = {};
+    }
     renderTabs();
-    $("expiry").value = defaultExpiryISO();
     $("load-chain").addEventListener("click", loadChain);
     $("replay-refresh").addEventListener("click", loadReplayList);
     $("mode-live").addEventListener("click", () => setMode("live"));
@@ -172,6 +178,7 @@
       $("signals").innerHTML = "";
       $("spot").textContent = "—";
       $("last-seen").textContent = "—";
+      $("expiry").value = state.expiries[key] || defaultExpiryISO();
 
       if (state.mode === "replay") {
         renderIndexReplay(key);
