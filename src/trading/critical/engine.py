@@ -291,11 +291,13 @@ class CriticalEngine:
         final = combine_signals(sigs, regime_bias=regime.bias, min_agreement=2)
         if final is None:
             return
-        if not regime_allow(regime, final.side):
+        if not regime_allow(regime, final.side,
+                             min_confidence=self.cfg.regime_min_confidence):
             log.info("critical_entry_blocked_by_regime",
                      index=index, side=final.side,
                      regime=regime.regime, bias=regime.bias,
-                     confidence=regime.confidence)
+                     confidence=regime.confidence,
+                     min_required=self.cfg.regime_min_confidence)
             return
 
         # Pick an ITM contract in the configured delta window
