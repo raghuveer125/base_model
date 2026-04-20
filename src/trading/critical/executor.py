@@ -1,0 +1,175 @@
+"""Thin adapter around `trading.orders.PaperExecutor`.
+
+Translates `Signal + EntryCandidate + Position` into the `Order` /
+`Fill` protocol used by the existing paper engine, then emits a JSON
+record on `scalp.{INDEX}` for observability.
+
+No state lives here — caller (engine) is responsible for updating
+`CriticalState` with the returned position.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date
+from typing import Literal
+
+from trading.critical.entry import EntryCandidate
+from trading.critical.state import Position
+from trading.critical.triggers import Signal
+from trading.events import EventBus
+from trading.orders.base import Fill, Order
+from trading.orders.paper import PaperExecutor
+from trading.schemas import FYERS_INDEX_SYMBOL, INDEX_OPTION_ROOT, now_ms
+
+# Lot sizes as of the SEBI Nov-2024 revision. Could be moved to config
+# later if exchanges revise again.
+LOT_SIZES: dict[str, int] = {
+    "NIFTY50":   75,
+    "BANKNIFTY": 30,
+    "SENSEX":    20,
+}
+
+STRATEGY_NAME = "critical_scalp"
+
+ScalpEvent = Literal["entry", "exit"]
+
+
+@dataclass
+class ExecutionOutcome:
+    ok: bool
+    position: Position | None
+    fill: Fill | None
+    reason: str = ""
+
+
+def _instrument_symbol(index: str, expiry_d: date, strike: int, ot: str) -> str:
+    """Best-effort instrument string for the paper executor.
+
+    Uses the same monthly format helper that `adapter.build_option_subscription`
+    uses — keeping both ends of the pipeline symmetric. The paper
+    executor doesn't actually care about the format (it just echoes
+    back the string on fills), but making it look real means the
+    audit log is usable for reconciliation later.
+    """
+    exch = "NSE" if index != "SENSEX" else "BSE"
+    root = INDEX_OPTION_ROOT.get(index, index)
+    yy = expiry_d.strftime("%y")
+    # We always pass "monthly-style" for simplicity in this adapter —
+    # the critical layer doesn't need to distinguish weekly vs monthly
+    # for audit purposes.
+    return f"{exch}:{root}{yy}{expiry_d.strftime('%b').upper()}{strike}{ot}"
+
+
+class ScalpExecutor:
+    def __init__(
+        self,
+        paper: PaperExecutor | None = None,
+        bus: EventBus | None = None,
+    ) -> None:
+        self._paper = paper or PaperExecutor()
+        self._bus = bus or EventBus()
+
+    def enter(
+        self, *, index: str, expiry_d: date, cand: EntryCandidate,
+        signal: Signal, lots: int, target_ltp: float, stop_ltp: float,
+        time_stop_ms: int, signal_ts_ms: int,
+    ) -> ExecutionOutcome:
+        lot_size = LOT_SIZES.get(index, 1)
+        qty = max(lots * lot_size, 1)
+        instrument = _instrument_symbol(index, expiry_d, cand.strike, cand.side)
+        order = Order(
+            strategy=STRATEGY_NAME,
+            index=index,
+            instrument=instrument,
+            action="BUY",
+            qty=qty,
+            ref_price=float(cand.ltp),
+            signal_ts=signal_ts_ms,
+            ordered_ts=now_ms(),
+            signal_reason=" | ".join(signal.reasons),
+            signal_confidence=float(signal.confidence),
+        )
+        result = self._paper.execute(order)
+        if not result.ok or result.fill is None:
+            self._publish_event("entry_rejected", index, {
+                "strike": cand.strike, "side": cand.side,
+                "reason": result.reason,
+            })
+            return ExecutionOutcome(False, None, None, result.reason)
+
+        pos = Position(
+            index=index,
+            expiry_iso=expiry_d.isoformat(),
+            strike=cand.strike,
+            option_type=cand.side,  # type: ignore[arg-type]
+            lots=lots, lot_size=lot_size,
+            entry_ltp=result.fill.fill_price,
+            entry_ts_ms=result.fill.ts_ms,
+            target_ltp=target_ltp,
+            stop_ltp=stop_ltp,
+            time_stop_ms=time_stop_ms,
+            reason=" | ".join(signal.reasons),
+        )
+        self._publish_event("entry", index, {
+            "strike": pos.strike, "side": pos.option_type,
+            "lots": pos.lots, "qty": qty,
+            "entry_ltp": pos.entry_ltp,
+            "target": pos.target_ltp, "stop": pos.stop_ltp,
+            "confidence": signal.confidence,
+            "reasons": list(signal.reasons),
+            "instrument": instrument,
+        })
+        return ExecutionOutcome(True, pos, result.fill)
+
+    def exit(
+        self, *, pos: Position, current_ltp: float,
+        reason: str, signal_ts_ms: int,
+    ) -> ExecutionOutcome:
+        qty = pos.lots * pos.lot_size
+        instrument = _instrument_symbol(
+            pos.index,
+            # Position only stores expiry_iso — convert back just for the
+            # audit-log instrument string.
+            date.fromisoformat(pos.expiry_iso),
+            pos.strike, pos.option_type,
+        )
+        order = Order(
+            strategy=STRATEGY_NAME, index=pos.index,
+            instrument=instrument, action="SELL", qty=qty,
+            ref_price=float(current_ltp),
+            signal_ts=signal_ts_ms, ordered_ts=now_ms(),
+            signal_reason=reason, signal_confidence=0.0,
+        )
+        result = self._paper.execute(order)
+        if not result.ok or result.fill is None:
+            return ExecutionOutcome(False, pos, None, result.reason)
+        pnl = (result.fill.fill_price - pos.entry_ltp) * qty - result.fill.fees
+        self._publish_event("exit", pos.index, {
+            "strike": pos.strike, "side": pos.option_type,
+            "entry_ltp": pos.entry_ltp,
+            "exit_ltp": result.fill.fill_price,
+            "pnl": pnl, "reason": reason,
+            "held_ms": result.fill.ts_ms - pos.entry_ts_ms,
+            "instrument": instrument,
+        })
+        return ExecutionOutcome(True, None, result.fill, reason)
+
+    # ---- internals ----
+
+    def _publish_event(self, kind: ScalpEvent | str, index: str,
+                        data: dict) -> None:
+        try:
+            self._bus.publish(f"scalp.{index}", {
+                "kind": kind,
+                "ts": now_ms(),
+                **data,
+            })
+        except Exception:   # noqa: BLE001 — observability must never block trading
+            pass
+
+
+# Exported helper for tests / external callers who want to know what
+# instrument string a given (index, expiry, strike, side) would produce.
+__all__ = ["ScalpExecutor", "ExecutionOutcome", "LOT_SIZES", "STRATEGY_NAME",
+           "_instrument_symbol"]
