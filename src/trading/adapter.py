@@ -136,6 +136,27 @@ def normalize_index_tick(payload: dict) -> IndexTick | None:
         return None
 
 
+def _as_float(v) -> float | None:
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    # Fyers sometimes sends 0 as a sentinel "no quote" — pass through as-is;
+    # callers distinguish via None vs 0 explicitly.
+    return f
+
+
+def _as_int(v) -> int | None:
+    if v is None:
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def normalize_option_tick(payload: dict) -> OptionTick | None:
     sym = _get(payload, "symbol", "sym")
     if not sym:
@@ -151,12 +172,38 @@ def normalize_option_tick(payload: dict) -> OptionTick | None:
     oi_change = _get(payload, "oich", "oi_change", default=0)
     iv = _get(payload, "iv", "implied_volatility")
     ts_ex = _get(payload, "exch_feed_time", "timestamp", "tt", default=0)
+
+    # Microstructure — Fyers WS v3 field names, plus short-form fallbacks
+    bid = _as_float(_get(payload, "bid_price", "bid", "bp"))
+    ask = _as_float(_get(payload, "ask_price", "ask", "ap"))
+    bid_qty = _as_int(_get(payload, "bid_size", "bid_qty", "bq1", "bq"))
+    ask_qty = _as_int(_get(payload, "ask_size", "ask_qty", "aq1", "aq"))
+    volume = _as_int(_get(payload, "vol_traded_today", "volume", "v"))
+    prev_close = _as_float(_get(payload, "prev_close_price", "prev_close"))
+    change = _as_float(_get(payload, "ch", "change"))
+    change_pct = _as_float(_get(payload, "chp", "change_pct", "change_percent"))
+
+    try:
+        ltp_f = float(ltp)
+    except (TypeError, ValueError) as e:
+        log.warning("normalize_option_failed", sym=sym, error=str(e))
+        return None
+
+    # Derive change / change_pct from prev_close when the feed didn't carry them.
+    if change is None and prev_close is not None and prev_close > 0:
+        change = ltp_f - prev_close
+    if change_pct is None and prev_close is not None and prev_close > 0:
+        change_pct = (ltp_f - prev_close) / prev_close * 100.0
+
     try:
         return OptionTick(
             index=index, strike=parsed.strike, option_type=parsed.option_type,
-            expiry=parsed.expiry, ltp=float(ltp),
+            expiry=parsed.expiry, ltp=ltp_f,
             oi=int(oi or 0), oi_change=int(oi_change or 0),
             iv=float(iv) if iv is not None else None,
+            bid=bid, ask=ask, bid_qty=bid_qty, ask_qty=ask_qty,
+            volume=volume, prev_close=prev_close,
+            change=change, change_pct=change_pct,
             ts_exchange=int(_to_ms(ts_ex)), ts_received=now_ms(),
         )
     except (ValueError, TypeError) as e:

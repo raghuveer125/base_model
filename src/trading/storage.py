@@ -84,6 +84,39 @@ class LiveStore:
     def set_atm(self, index: str, atm: int) -> None:
         self.r.set(f"tpp:atm:{index}", atm)
 
+    def merge_option_oi(
+        self, index: str, expiry: str, strike: int, option_type: str,
+        oi: int, oi_change: int | None = None,
+    ) -> bool:
+        """Overlay OI onto the cached option tick without clobbering LTP/quotes.
+
+        Fyers WS SymbolUpdate doesn't carry OI for options; DepthUpdate frames
+        do. Those frames often lack a fresh LTP, so we merge (read-modify-write)
+        rather than pushing a second OptionTick that would overwrite the price.
+
+        Returns True if a tick record existed and was updated. The ingest
+        thread is single-threaded, so the R-M-W is race-free.
+        """
+        key_latest = f"tpp:tick:opt:{index}:{expiry}:{strike}:{option_type}"
+        key_chain = f"tpp:chain:{index}:{expiry}"
+        field = f"{strike}:{option_type}"
+        raw = self.r.get(key_latest)
+        if not raw:
+            return False
+        try:
+            tick_dict = orjson.loads(raw)
+        except (ValueError, TypeError):
+            return False
+        tick_dict["oi"] = int(oi)
+        if oi_change is not None:
+            tick_dict["oi_change"] = int(oi_change)
+        body = orjson.dumps(tick_dict)
+        pipe = self.r.pipeline(transaction=False)
+        pipe.set(key_latest, body)
+        pipe.hset(key_chain, field, body)
+        pipe.execute()
+        return True
+
     def get_chain(self, index: str, expiry: str) -> dict[str, dict]:
         raw = self.r.hgetall(f"tpp:chain:{index}:{expiry}")
         return {k.decode(): orjson.loads(v) for k, v in raw.items()}

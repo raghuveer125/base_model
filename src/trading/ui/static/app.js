@@ -225,11 +225,37 @@
       if (!res.ok) return;
       const body = await res.json();
       state.chain = {};
+      state.ltpHistory = {};   // reset per-strike momentum when reloading
+      if (typeof body.spot === "number") state.spotValue = body.spot;
       for (const [strike, row] of Object.entries(body.strikes || {})) {
-        state.chain[+strike] = { CE: row.CE || {}, PE: row.PE || {} };
+        state.chain[+strike] = {
+          CE: row.CE || {},
+          PE: row.PE || {},
+        };
       }
       renderChain();
     } catch (e) { /* nop */ }
+  }
+
+  // Track last N LTPs per (strike,side) for tick-momentum tagging.
+  const LTP_HISTORY_N = 5;
+  function recordLtp(strike, ot, ltp) {
+    if (typeof ltp !== "number") return;
+    state.ltpHistory ||= {};
+    const key = `${strike}:${ot}`;
+    const arr = (state.ltpHistory[key] ||= []);
+    if (arr.length && arr[arr.length - 1] === ltp) return;   // no change
+    arr.push(ltp);
+    if (arr.length > LTP_HISTORY_N) arr.shift();
+  }
+
+  function ltpMomentum(strike, ot) {
+    const arr = state.ltpHistory?.[`${strike}:${ot}`];
+    if (!arr || arr.length < 2) return "flat";
+    const first = arr[0], last = arr[arr.length - 1];
+    if (last > first) return "up";
+    if (last < first) return "down";
+    return "flat";
   }
 
   function connectWs(idx) {
@@ -267,6 +293,7 @@
 
   function onIndexTick(tick) {
     if (!tick || typeof tick.ltp !== "number") return;
+    state.spotValue = tick.ltp;
     $("spot").textContent = tick.ltp.toFixed(2);
     if (tick.ts_exchange) $("last-seen").textContent = fmtTime(tick.ts_exchange);
   }
@@ -276,6 +303,11 @@
     const row = state.chain[tick.strike] ||= { CE: {}, PE: {} };
     row[tick.option_type] ||= {};
     row[tick.option_type].tick = tick;
+    // Client-side derived metrics (no backend round-trip per tick).
+    row[tick.option_type].metrics = computeRowMetrics(
+      tick.strike, tick.option_type, tick, row[tick.option_type].greeks,
+    );
+    recordLtp(tick.strike, tick.option_type, tick.ltp);
     scheduleRender();
   }
 
@@ -284,6 +316,12 @@
     const row = state.chain[g.strike] ||= { CE: {}, PE: {} };
     row[g.option_type] ||= {};
     row[g.option_type].greeks = g;
+    // itm_prob / intrinsic / TV depend on greeks + spot — recompute.
+    if (row[g.option_type].tick) {
+      row[g.option_type].metrics = computeRowMetrics(
+        g.strike, g.option_type, row[g.option_type].tick, g,
+      );
+    }
     scheduleRender();
   }
 
@@ -315,29 +353,153 @@
     requestAnimationFrame(() => { renderPending = false; renderChain(); });
   }
 
+  // ---- derived metrics (client-side mirror of trading.derived.build_metrics) ----
+  // Kept here so per-tick updates don't pay a network round-trip; the REST
+  // endpoint computes the same values for initial page load.
+  const LOW_LIQ_SPREAD_PCT = 4.0;
+  const LOW_LIQ_MIN_VOLUME = 100;
+
+  function computeRowMetrics(strike, ot, tick, greeks) {
+    if (!tick) return {};
+    const bid = tick.bid, ask = tick.ask;
+    const bq = tick.bid_qty, aq = tick.ask_qty;
+    const vol = tick.volume, oi = tick.oi;
+    const ltp = tick.ltp;
+    const spot = (greeks && greeks.spot) || state.spotValue || null;
+
+    let spread_pct = null;
+    if (Number.isFinite(bid) && Number.isFinite(ask) && ask >= bid && (bid + ask) > 0) {
+      const mid = (bid + ask) / 2;
+      spread_pct = mid > 0 ? ((ask - bid) / mid) * 100 : null;
+    }
+    let imbalance = null;
+    if (Number.isFinite(bq) && Number.isFinite(aq) && (bq + aq) > 0) {
+      imbalance = (bq - aq) / (bq + aq);
+    }
+    let vol_oi = null;
+    if (Number.isFinite(vol) && Number.isFinite(oi) && oi > 0) {
+      vol_oi = vol / oi;
+    }
+    let intrinsic = null, time_value = null;
+    if (Number.isFinite(spot) && spot > 0 && Number.isFinite(ltp) && Number.isFinite(strike)) {
+      intrinsic = ot === "CE"
+        ? Math.max(spot - strike, 0)
+        : Math.max(strike - spot, 0);
+      time_value = Math.max(ltp - intrinsic, 0);
+    }
+    const itm_prob = (greeks && Number.isFinite(greeks.itm_prob)) ? greeks.itm_prob : null;
+    const low_liq =
+      (spread_pct !== null && spread_pct > LOW_LIQ_SPREAD_PCT) ||
+      (Number.isFinite(vol) && vol < LOW_LIQ_MIN_VOLUME);
+
+    return { spread_pct, imbalance, vol_oi, intrinsic, time_value, itm_prob, low_liq };
+  }
+
+  // ---- cell builders ----
+
+  function fmtQty(n) {
+    if (!Number.isFinite(n)) return "—";
+    if (n >= 1e7) return (n / 1e7).toFixed(1) + "Cr";
+    if (n >= 1e5) return (n / 1e5).toFixed(1) + "L";
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
+    return String(n);
+  }
+
+  function fmtPct(n) {
+    if (!Number.isFinite(n)) return "—";
+    return (n >= 0 ? "+" : "") + n.toFixed(2) + "%";
+  }
+
+  function badgesCell(m) {
+    if (!m) return "";
+    const tags = [];
+    if (m.low_liq) tags.push(`<span class="badge liq">LIQ</span>`);
+    if (Number.isFinite(m.imbalance)) {
+      if (m.imbalance > 0.3) tags.push(`<span class="badge imb-up">IMB↑</span>`);
+      else if (m.imbalance < -0.3) tags.push(`<span class="badge imb-down">IMB↓</span>`);
+    }
+    return tags.join("");
+  }
+
+  function spreadCell(pct) {
+    if (!Number.isFinite(pct)) return `<td class="num">—</td>`;
+    const cls = pct > LOW_LIQ_SPREAD_PCT ? "warn" : "";
+    return `<td class="num ${cls}">${pct.toFixed(2)}</td>`;
+  }
+
+  function ltpCell(strike, ot, ltp, mom) {
+    if (!Number.isFinite(ltp)) return `<td class="num ltp">—</td>`;
+    return `<td class="num ltp mom-${mom}">${ltp.toFixed(2)}</td>`;
+  }
+
+  function chgCell(v, pct = false) {
+    if (!Number.isFinite(v)) return `<td class="num">—</td>`;
+    const cls = v > 0 ? "pos" : (v < 0 ? "neg" : "");
+    return `<td class="num ${cls}">${pct ? fmtPct(v) : (v >= 0 ? "+" : "") + v.toFixed(2)}</td>`;
+  }
+
+  function bidAskCell(px, qty) {
+    if (!Number.isFinite(px)) return `<td class="num">—</td>`;
+    const q = Number.isFinite(qty) ? `<span class="q">×${fmtQty(qty)}</span>` : "";
+    return `<td class="num">${px.toFixed(2)}${q}</td>`;
+  }
+
+  function itmCell(p) {
+    if (!Number.isFinite(p)) return `<td class="num">—</td>`;
+    return `<td class="num">${(p * 100).toFixed(1)}</td>`;
+  }
+
   function renderChain() {
     const tbody = $("chain-tbody");
     const strikes = Object.keys(state.chain).map(Number).sort((a, b) => a - b);
     const rows = strikes.map((s) => {
       const r = state.chain[s];
       const ce = r.CE || {}, pe = r.PE || {};
-      const ceT = ce.tick || {}, ceG = ce.greeks || {};
-      const peT = pe.tick || {}, peG = pe.greeks || {};
+      const ceT = ce.tick || {}, ceG = ce.greeks || {}, ceM = ce.metrics || {};
+      const peT = pe.tick || {}, peG = pe.greeks || {}, peM = pe.metrics || {};
+      const ceMom = ltpMomentum(s, "CE");
+      const peMom = ltpMomentum(s, "PE");
       const isAtm = state.atm && Math.abs(s - state.atm) < 1;
-      return `<tr${isAtm ? ' class="atm"' : ''}>
-        <td>${fmt(ceT.ltp)}</td>
-        <td>${fmt(ceG.delta, 3)}</td>
-        <td>${fmt(ceG.gamma, 5)}</td>
-        <td>${fmt(ceG.theta, 2)}</td>
-        <td>${fmt(ceG.vega, 3)}</td>
-        <td>${fmt(ceG.iv ?? ceT.iv, 3)}</td>
-        <td class="strike">${s}</td>
-        <td>${fmt(peG.iv ?? peT.iv, 3)}</td>
-        <td>${fmt(peG.vega, 3)}</td>
-        <td>${fmt(peG.theta, 2)}</td>
-        <td>${fmt(peG.gamma, 5)}</td>
-        <td>${fmt(peG.delta, 3)}</td>
-        <td>${fmt(peT.ltp)}</td>
+      const trCls = ["row", isAtm ? "atm" : ""].filter(Boolean).join(" ");
+
+      return `<tr class="${trCls}">
+        <td class="num">${fmtQty(ceT.oi)}</td>
+        <td class="num">${fmtQty(ceT.oi_change)}</td>
+        <td class="num">${fmtQty(ceT.volume)}</td>
+        <td class="num">${Number.isFinite(ceM.vol_oi) ? ceM.vol_oi.toFixed(2) : "—"}</td>
+        <td class="num">${fmt(ceG.iv ?? ceT.iv, 3)}</td>
+        <td class="num">${fmt(ceG.delta, 3)}</td>
+        <td class="num">${fmt(ceG.gamma, 5)}</td>
+        <td class="num">${fmt(ceG.theta, 2)}</td>
+        <td class="num">${fmt(ceG.vega, 3)}</td>
+        ${itmCell(ceM.itm_prob)}
+        <td class="num">${Number.isFinite(ceM.time_value) ? ceM.time_value.toFixed(2) : "—"}</td>
+        ${spreadCell(ceM.spread_pct)}
+        ${bidAskCell(ceT.bid, ceT.bid_qty)}
+        ${ltpCell(s, "CE", ceT.ltp, ceMom)}
+        ${chgCell(ceT.change)}
+        ${chgCell(ceT.change_pct, true)}
+        ${bidAskCell(ceT.ask, ceT.ask_qty)}
+
+        <td class="strike">${s}<div class="badges">${badgesCell(ceM)}${badgesCell(peM)}</div></td>
+
+        ${bidAskCell(peT.bid, peT.bid_qty)}
+        ${ltpCell(s, "PE", peT.ltp, peMom)}
+        ${chgCell(peT.change)}
+        ${chgCell(peT.change_pct, true)}
+        ${bidAskCell(peT.ask, peT.ask_qty)}
+        ${spreadCell(peM.spread_pct)}
+        <td class="num">${Number.isFinite(peM.time_value) ? peM.time_value.toFixed(2) : "—"}</td>
+        ${itmCell(peM.itm_prob)}
+        <td class="num">${fmt(peG.vega, 3)}</td>
+        <td class="num">${fmt(peG.theta, 2)}</td>
+        <td class="num">${fmt(peG.gamma, 5)}</td>
+        <td class="num">${fmt(peG.delta, 3)}</td>
+        <td class="num">${fmt(peG.iv ?? peT.iv, 3)}</td>
+        <td class="num">${Number.isFinite(peM.vol_oi) ? peM.vol_oi.toFixed(2) : "—"}</td>
+        <td class="num">${fmtQty(peT.volume)}</td>
+        <td class="num">${fmtQty(peT.oi_change)}</td>
+        <td class="num">${fmtQty(peT.oi)}</td>
       </tr>`;
     });
     tbody.innerHTML = rows.join("");

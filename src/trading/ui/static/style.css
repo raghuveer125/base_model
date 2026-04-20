@@ -142,16 +142,50 @@ section h2 { font-size: 0.9rem; letter-spacing: 0.06em;
   border-radius: 4px; padding: 0.3rem 0.8rem; cursor: pointer;
 }
 
-table#chain { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 0.85rem; }
+#chain-section { overflow-x: auto; }
+table#chain { width: max-content; min-width: 100%; border-collapse: collapse;
+  font-family: var(--mono); font-size: 0.75rem; white-space: nowrap; }
 table#chain th, table#chain td {
-  padding: 0.3rem 0.5rem; border-bottom: 1px solid var(--border); text-align: right;
+  padding: 0.22rem 0.4rem; border-bottom: 1px solid var(--border); text-align: right;
 }
-table#chain thead th { color: var(--muted); font-weight: 500; }
+table#chain td.num { font-variant-numeric: tabular-nums; }
+table#chain thead th { color: var(--muted); font-weight: 500; position: sticky; top: 0;
+  background: var(--panel); z-index: 1; }
 table#chain .side-ce { background: var(--ce); }
 table#chain .side-pe { background: var(--pe); }
 table#chain .strike-head { background: var(--panel); }
-table#chain td.strike { font-weight: 700; color: var(--accent); text-align: center; }
+table#chain td.strike { font-weight: 700; color: var(--accent); text-align: center;
+  background: var(--panel); }
+table#chain tr.atm { background: #1f6feb18; }
 table#chain tr.atm td.strike { background: #1f6feb33; }
+
+/* quote size annotation inside a bid/ask cell */
+table#chain td .q { color: var(--muted); font-size: 0.68rem; margin-left: 0.15rem; }
+
+/* change direction */
+table#chain td.pos { color: var(--green); }
+table#chain td.neg { color: var(--red); }
+table#chain td.warn { color: #f0b429; font-weight: 600; }
+
+/* LTP momentum hint — subtle left-border tick */
+table#chain td.ltp { font-weight: 600; }
+table#chain td.ltp.mom-up   { color: var(--green); }
+table#chain td.ltp.mom-down { color: var(--red); }
+
+/* scalper badges inside the STRIKE column */
+table#chain td.strike .badges { display: flex; gap: 3px; justify-content: center;
+  margin-top: 2px; }
+.badge {
+  font-size: 0.6rem;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.2;
+}
+.badge.liq      { background: #f8514933; color: var(--red); }
+.badge.imb-up   { background: #3fb95033; color: var(--green); }
+.badge.imb-down { background: #f8514933; color: var(--red); }
 
 .feed { list-style: none; padding: 0; margin: 0; font-family: var(--mono); font-size: 0.82rem; }
 .feed li { padding: 0.25rem 0.5rem; border-bottom: 1px dashed var(--border); }

@@ -44,14 +44,42 @@
       <table id="chain">
         <thead>
           <tr>
-            <th colspan="6" class="side-ce">CALL</th>
+            <th colspan="17" class="side-ce">CALL</th>
             <th class="strike-head">STRIKE</th>
-            <th colspan="6" class="side-pe">PUT</th>
+            <th colspan="17" class="side-pe">PUT</th>
           </tr>
           <tr>
-            <th>LTP</th><th>&Delta;</th><th>&Gamma;</th><th>&Theta;</th><th>&nu;</th><th>IV</th>
+            <th title="Open Interest">OI</th>
+            <th title="OI change">&Delta;OI</th>
+            <th title="Volume traded today">Vol</th>
+            <th title="Volume / OI — churn">V/OI</th>
+            <th title="Implied volatility (annualized, decimal)">IV</th>
+            <th>&Delta;</th><th>&Gamma;</th><th>&Theta;</th><th>&nu;</th>
+            <th title="Probability ITM at expiry — N(d2)">ITM%</th>
+            <th title="Time value = LTP − intrinsic">TV</th>
+            <th title="(ask−bid)/mid × 100">Sprd%</th>
+            <th title="Bid × qty">Bid×Q</th>
+            <th>LTP</th>
+            <th title="Change vs prev close">Chg</th>
+            <th title="Change % vs prev close">Chg%</th>
+            <th title="Ask × qty">Ask×Q</th>
+
             <th></th>
-            <th>IV</th><th>&nu;</th><th>&Theta;</th><th>&Gamma;</th><th>&Delta;</th><th>LTP</th>
+
+            <th title="Bid × qty">Bid×Q</th>
+            <th>LTP</th>
+            <th title="Change vs prev close">Chg</th>
+            <th title="Change %">Chg%</th>
+            <th title="Ask × qty">Ask×Q</th>
+            <th title="Spread %">Sprd%</th>
+            <th title="Time value">TV</th>
+            <th title="Probability ITM at expiry">ITM%</th>
+            <th>&nu;</th><th>&Theta;</th><th>&Gamma;</th><th>&Delta;</th>
+            <th>IV</th>
+            <th title="Volume / OI">V/OI</th>
+            <th>Vol</th>
+            <th>&Delta;OI</th>
+            <th>OI</th>
           </tr>
         </thead>
         <tbody id="chain-tbody"></tbody>

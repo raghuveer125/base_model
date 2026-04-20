@@ -23,8 +23,10 @@ from fyers_apiv3.FyersWebsocket import data_ws
 from trading.adapter import (
     build_index_subscription,
     build_option_subscription,
+    canonical_index_from_root,
     normalize_index_tick,
     normalize_option_tick,
+    parse_option_symbol,
 )
 from trading.auth import ensure_access_token
 from trading.config import get_settings
@@ -222,6 +224,58 @@ class Orchestrator:
             )
         return syms
 
+    # ---- Depth (OI) handling ----
+
+    # Keys that distinguish a DepthUpdate payload from a SymbolUpdate one.
+    # Fyers v3 depth frames expose L5 book via bid1_price…bid5_price and the
+    # matching size / order-count siblings. SymbolUpdate carries only a single
+    # bid_price/ask_price (no numeric suffix).
+    _DEPTH_MARKERS = ("bid1_price", "ask1_price", "bid1_size", "ask1_size")
+
+    @classmethod
+    def _is_depth_only_frame(cls, payload: dict) -> bool:
+        """True when the frame looks like a DepthUpdate (no fresh LTP)."""
+        if any(k in payload for k in cls._DEPTH_MARKERS):
+            return True
+        # Some firmware versions mark depth frames via `type` ("dp" / "depth").
+        t = payload.get("type")
+        if isinstance(t, str) and t.lower() in ("dp", "depth", "if"):
+            return True
+        return False
+
+    def _handle_depth_oi(self, sym: str, payload: dict) -> None:
+        """Merge OI from a depth frame into the cached option tick."""
+        oi = payload.get("oi")
+        if oi is None:
+            oi = payload.get("open_interest")
+        if oi is None:
+            return
+        prev_oi = payload.get("prev_oi")
+        try:
+            oi_int = int(oi)
+        except (TypeError, ValueError):
+            return
+        oi_change: int | None = None
+        if prev_oi is not None:
+            try:
+                oi_change = oi_int - int(prev_oi)
+            except (TypeError, ValueError):
+                oi_change = None
+        parsed = parse_option_symbol(sym)
+        if parsed is None:
+            return
+        index = canonical_index_from_root(parsed.root)
+        if not index:
+            return
+        try:
+            self.store.merge_option_oi(
+                index, parsed.expiry.isoformat(),
+                parsed.strike, parsed.option_type,
+                oi_int, oi_change=oi_change,
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("depth_oi_merge_failed", sym=sym, error=str(e))
+
     # ---- WS callbacks ----
 
     def _on_open(self) -> None:
@@ -233,6 +287,15 @@ class Orchestrator:
             self._ws.subscribe(symbols=syms, data_type="SymbolUpdate")
             self._subscribed = syms
             log.info("ws_subscribed", count=len(syms))
+            # Option symbols also get a DepthUpdate subscription — SymbolUpdate
+            # alone does not carry OI for F&O on Fyers v3.
+            opt_syms = [s for s in syms if s.endswith("CE") or s.endswith("PE")]
+            if opt_syms:
+                try:
+                    self._ws.subscribe(symbols=opt_syms, data_type="DepthUpdate")
+                    log.info("ws_subscribed_depth", count=len(opt_syms))
+                except Exception as e:  # noqa: BLE001
+                    log.warning("ws_depth_subscribe_failed", error=str(e))
         self._ws.keep_running()
 
     def _on_close(self, message: Any) -> None:
@@ -263,6 +326,12 @@ class Orchestrator:
                 self.bus.publish(ch_index_tick(tick.index), tick.model_dump(mode="json"))
                 self.idx_buffer.add(tick)
             else:
+                # Depth frames for options carry OI but often no fresh LTP.
+                # Route them to a partial-merge that only touches OI so we
+                # don't clobber the last-known quote.
+                if self._is_depth_only_frame(payload):
+                    self._handle_depth_oi(sym, payload)
+                    return
                 tick = normalize_option_tick(payload)
                 if tick is None:
                     return

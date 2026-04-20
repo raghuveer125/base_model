@@ -6,7 +6,12 @@ import math
 from datetime import date, datetime, time as dtime
 from zoneinfo import ZoneInfo
 
-from trading.greeks import compute_greeks, time_to_expiry_years
+from trading.greeks import (
+    compute_greeks,
+    compute_greeks_full,
+    solve_iv,
+    time_to_expiry_years,
+)
 
 
 R = 0.065
@@ -95,3 +100,64 @@ def test_time_to_expiry_is_positive_before_close():
     tte = time_to_expiry_years(expiry, now_ms_=int(before))
     assert tte > 0
     assert abs(tte - (1 / 365.25)) < 1e-3
+
+
+# ----- ITM probability (N(d2) / N(-d2)) -----
+
+def test_itm_prob_in_unit_interval():
+    for spot in (20_000, 25_000, 30_000):
+        _, _, _, _, p = compute_greeks_full("CE", spot, K, IV, T, R)
+        assert 0.0 <= p <= 1.0
+        _, _, _, _, p = compute_greeks_full("PE", spot, K, IV, T, R)
+        assert 0.0 <= p <= 1.0
+
+
+def test_itm_prob_call_plus_put_equals_one():
+    # N(d2) + N(-d2) == 1 by symmetry of the standard normal.
+    for spot in (24_000, 25_000, 26_000):
+        _, _, _, _, pc = compute_greeks_full("CE", spot, K, IV, T, R)
+        _, _, _, _, pp = compute_greeks_full("PE", spot, K, IV, T, R)
+        assert math.isclose(pc + pp, 1.0, abs_tol=1e-6)
+
+
+def test_itm_prob_monotone_in_moneyness_for_call():
+    _, _, _, _, p_low = compute_greeks_full("CE", 22_000, K, IV, T, R)
+    _, _, _, _, p_atm = compute_greeks_full("CE", 25_000, K, IV, T, R)
+    _, _, _, _, p_hi  = compute_greeks_full("CE", 28_000, K, IV, T, R)
+    assert p_low < p_atm < p_hi
+
+
+def test_itm_prob_zero_time_collapses_to_binary():
+    _, _, _, _, p_itm = compute_greeks_full("CE", 26_000, K, IV, 0.0, R)
+    _, _, _, _, p_otm = compute_greeks_full("CE", 24_000, K, IV, 0.0, R)
+    assert p_itm == 1.0 and p_otm == 0.0
+
+
+# ----- IV solver (BS inversion) -----
+
+from trading.greeks import _bs_price    # noqa: E402 — internal helper for round-trip tests
+
+
+def test_solve_iv_round_trip_recovers_sigma():
+    """Forward: price = BS(σ). Solve: σ' = solve_iv(price). Expect σ ≈ σ'."""
+    spot, K_ = 25_000, 25_000
+    T_ = 30 / 365.25
+    for true_sigma in (0.10, 0.18, 0.30, 0.50):
+        price, _ = _bs_price("CE", spot, K_, true_sigma, T_, R)
+        solved = solve_iv("CE", spot, K_, price, T_, R)
+        assert math.isclose(solved, true_sigma, abs_tol=1e-3)
+        price_p, _ = _bs_price("PE", spot, K_, true_sigma, T_, R)
+        solved_p = solve_iv("PE", spot, K_, price_p, T_, R)
+        assert math.isclose(solved_p, true_sigma, abs_tol=1e-3)
+
+
+def test_solve_iv_below_intrinsic_returns_zero():
+    # Deep-ITM call, price quoted below intrinsic → stale / crossed → no answer.
+    # Spot 26_000, K 25_000 → intrinsic = 1000. Price = 500 (< 1000) must bail.
+    assert solve_iv("CE", 26_000, 25_000, 500.0, 30 / 365.25, R) == 0.0
+
+
+def test_solve_iv_zero_inputs_safe():
+    assert solve_iv("CE", 0, 25_000, 100.0, 0.1, R) == 0.0
+    assert solve_iv("CE", 25_000, 25_000, 0.0, 0.1, R) == 0.0
+    assert solve_iv("CE", 25_000, 25_000, 100.0, 0.0, R) == 0.0

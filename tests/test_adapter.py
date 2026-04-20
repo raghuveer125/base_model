@@ -89,6 +89,56 @@ def test_normalize_returns_none_on_unknown_index():
     assert normalize_index_tick({"symbol": "NSE:MYSTERY-INDEX", "ltp": 1}) is None
 
 
+def test_normalize_option_tick_microstructure_v3_keys():
+    """Fyers WS v3 primary key names: bid_price, ask_price, bid_size, ask_size,
+    vol_traded_today, prev_close_price, ch, chp."""
+    tick = normalize_option_tick({
+        "symbol": "NSE:NIFTY26O0125000CE",
+        "ltp": 120.55,
+        "oi": 12_345, "oich": 100, "iv": 14.2,
+        "bid_price": 120.10, "ask_price": 120.90,
+        "bid_size": 750, "ask_size": 1200,
+        "vol_traded_today": 25_400,
+        "prev_close_price": 115.30,
+        "ch": 5.25, "chp": 4.55,
+        "exch_feed_time": 1_729_300_000_000,
+    })
+    assert tick is not None
+    assert tick.bid == 120.10
+    assert tick.ask == 120.90
+    assert tick.bid_qty == 750 and tick.ask_qty == 1200
+    assert tick.volume == 25_400
+    assert tick.prev_close == 115.30
+    assert tick.change == 5.25
+    assert tick.change_pct == 4.55
+
+
+def test_normalize_option_tick_derives_change_from_prev_close():
+    """If the feed omits ch/chp, derive them from ltp − prev_close."""
+    tick = normalize_option_tick({
+        "symbol": "NSE:NIFTY26O0125000CE",
+        "ltp": 120.00,
+        "prev_close_price": 100.00,
+        "exch_feed_time": 1_729_300_000_000,
+    })
+    assert tick is not None
+    assert tick.change == 20.00
+    assert tick.change_pct == 20.00
+
+
+def test_normalize_option_tick_missing_microstructure_is_none():
+    """Absent microstructure fields must be None, never raise."""
+    tick = normalize_option_tick({
+        "symbol": "NSE:NIFTY26O0125000CE",
+        "ltp": 120.00,
+        "exch_feed_time": 1_729_300_000_000,
+    })
+    assert tick is not None
+    assert tick.bid is None and tick.ask is None
+    assert tick.volume is None
+    assert tick.change is None and tick.change_pct is None
+
+
 def test_build_option_subscription_monthly_uses_mmm_format():
     # 2026-04-30 is the last Thursday of April 2026 → monthly → YY+MMM.
     syms = build_option_subscription("NIFTY50", date(2026, 4, 30),

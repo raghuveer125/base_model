@@ -65,8 +65,12 @@ def _bs_cached(
     iv_bp: int,
     t_min: int,
     r_bp: int,
-) -> tuple[float, float, float, float]:
-    """Return (delta, gamma, theta_per_day, vega_per_pct). Bucketed-input cache."""
+) -> tuple[float, float, float, float, float]:
+    """Return (delta, gamma, theta_per_day, vega_per_pct, itm_prob).
+
+    itm_prob is the risk-neutral probability of finishing ITM at expiry —
+    N(d2) for CE, N(-d2) for PE. Bucketed-input cache.
+    """
     S = float(spot_int)
     K = float(strike_int)
     sigma = iv_bp / 10_000.0
@@ -76,9 +80,11 @@ def _bs_cached(
     if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
         if option_type == "CE":
             delta = 1.0 if S > K else 0.0
+            itm_prob = 1.0 if S > K else 0.0
         else:
             delta = -1.0 if S < K else 0.0
-        return (delta, 0.0, 0.0, 0.0)
+            itm_prob = 1.0 if S < K else 0.0
+        return (delta, 0.0, 0.0, 0.0, itm_prob)
 
     sqrt_t = math.sqrt(T)
     sigma_sqrt_t = sigma * sqrt_t
@@ -93,12 +99,14 @@ def _bs_cached(
     if option_type == "CE":
         delta = _norm_cdf(d1)
         theta_per_year = -S * phi_d1 * sigma / (2.0 * sqrt_t) - r * disc_k * _norm_cdf(d2)
+        itm_prob = _norm_cdf(d2)
     else:
         delta = _norm_cdf(d1) - 1.0
         theta_per_year = -S * phi_d1 * sigma / (2.0 * sqrt_t) + r * disc_k * _norm_cdf(-d2)
+        itm_prob = _norm_cdf(-d2)
 
     theta_per_day = theta_per_year / 365.25
-    return (delta, gamma, theta_per_day, vega)
+    return (delta, gamma, theta_per_day, vega, itm_prob)
 
 
 def compute_greeks(
@@ -109,12 +117,126 @@ def compute_greeks(
     time_to_expiry_years: float,
     risk_free_rate: float,
 ) -> tuple[float, float, float, float]:
-    """Public entry. Bucketizes inputs, then calls cached BS."""
+    """Public entry — legacy 4-tuple (delta, gamma, theta, vega) for back-compat.
+
+    New code should prefer :func:`compute_greeks_full` to also get itm_prob.
+    """
+    d, g, th, v, _ = compute_greeks_full(
+        option_type, spot, strike, iv, time_to_expiry_years, risk_free_rate,
+    )
+    return (d, g, th, v)
+
+
+def compute_greeks_full(
+    option_type: OptionType,
+    spot: float,
+    strike: int,
+    iv: float,
+    time_to_expiry_years: float,
+    risk_free_rate: float,
+) -> tuple[float, float, float, float, float]:
+    """Bucketizes inputs, returns (delta, gamma, theta, vega, itm_prob)."""
     spot_int = int(round(spot))
     iv_bp = int(round(iv * 10_000)) if iv > 0 else 0
     t_min = int(round(time_to_expiry_years * _MINUTES_PER_YEAR))
     r_bp = int(round(risk_free_rate * 10_000))
     return _bs_cached(option_type, int(strike), spot_int, iv_bp, t_min, r_bp)
+
+
+# ---------------------------------------------------------------------------
+# Implied volatility solver — invert Black-Scholes price to σ.
+#
+# Fyers WS does not publish IV for options, so we solve for it from the
+# live market price. Newton-Raphson on BS price converges in 5–10 iters for
+# liquid strikes; we cap at 30 and fall back to 0 (degenerate → zero greeks)
+# if convergence is poor or inputs are non-arbitrage-free.
+# ---------------------------------------------------------------------------
+
+
+def _bs_price(
+    option_type: str, S: float, K: float, sigma: float, T: float, r: float,
+) -> tuple[float, float]:
+    """Return (price, raw_vega). raw_vega is ∂Price/∂σ (not the per-1% one)."""
+    if sigma <= 0 or T <= 0 or S <= 0 or K <= 0:
+        if option_type == "CE":
+            return (max(S - K, 0.0), 0.0)
+        return (max(K - S, 0.0), 0.0)
+    sqrt_t = math.sqrt(T)
+    sigma_sqrt_t = sigma * sqrt_t
+    d1 = (math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / sigma_sqrt_t
+    d2 = d1 - sigma_sqrt_t
+    phi_d1 = _phi(d1)
+    disc_k = math.exp(-r * T) * K
+    if option_type == "CE":
+        price = S * _norm_cdf(d1) - disc_k * _norm_cdf(d2)
+    else:
+        price = disc_k * _norm_cdf(-d2) - S * _norm_cdf(-d1)
+    raw_vega = S * phi_d1 * sqrt_t
+    return (price, raw_vega)
+
+
+@lru_cache(maxsize=4096)
+def _iv_cached(
+    option_type: str,
+    strike_int: int,
+    spot_int: int,
+    price_paise: int,
+    t_min: int,
+    r_bp: int,
+) -> float:
+    """Solve σ from market price. Returns 0.0 when ill-conditioned."""
+    S = float(spot_int)
+    K = float(strike_int)
+    price = price_paise / 100.0
+    T = max(t_min, 0) / _MINUTES_PER_YEAR
+    r = r_bp / 10_000.0
+
+    if T <= 0 or price <= 0 or S <= 0 or K <= 0:
+        return 0.0
+
+    # Arbitrage bound: market price must at least cover intrinsic (give some
+    # slack for rounding / bid-ask). If it's below, quoted "price" is stale
+    # or crossed — bail out, don't force a bogus IV.
+    intrinsic = max(S - K, 0.0) if option_type == "CE" else max(K - S, 0.0)
+    if price < intrinsic * 0.98:
+        return 0.0
+
+    sigma = 0.30
+    for _ in range(30):
+        bs_p, raw_vega = _bs_price(option_type, S, K, sigma, T, r)
+        diff = bs_p - price
+        if abs(diff) < 1e-3:   # ≤0.1 paise — good enough
+            return max(sigma, 0.0)
+        if raw_vega < 1e-8:
+            return 0.0   # saddle / deep ITM with tiny sensitivity
+        sigma -= diff / raw_vega
+        if sigma < 1e-4:
+            sigma = 1e-4
+        elif sigma > 5.0:
+            sigma = 5.0
+    return max(sigma, 0.0)
+
+
+def solve_iv(
+    option_type: OptionType,
+    spot: float,
+    strike: int,
+    market_price: float,
+    time_to_expiry_years: float,
+    risk_free_rate: float,
+) -> float:
+    """Return σ (annualised, decimal) such that BS(σ) ≈ market_price.
+
+    Returns 0.0 when the solver cannot produce a meaningful answer — callers
+    should treat that like "IV unknown" (greeks will degenerate to zero).
+    """
+    if spot <= 0 or strike <= 0 or market_price <= 0:
+        return 0.0
+    spot_int = int(round(spot))
+    price_paise = int(round(market_price * 100))
+    t_min = int(round(time_to_expiry_years * _MINUTES_PER_YEAR))
+    r_bp = int(round(risk_free_rate * 10_000))
+    return _iv_cached(option_type, int(strike), spot_int, price_paise, t_min, r_bp)
 
 
 def cache_info() -> dict:
@@ -173,12 +295,20 @@ class GreeksEngine:
         expiry_d: date,
         spot: float,
         iv: float,
+        market_price: float | None = None,
     ) -> None:
         T = time_to_expiry_years(expiry_d)
         if T <= 0 or spot <= 0:
             metrics.incr_greek_skip()
             return
-        delta, gamma, theta, vega = compute_greeks(
+        # Fyers WS doesn't publish IV — fall back to BS inversion from the
+        # live market price so downstream greeks aren't all zero.
+        if iv <= 0 and market_price is not None and market_price > 0:
+            iv = solve_iv(
+                option_type, spot, strike, market_price,
+                T, self.settings.risk_free_rate,
+            )
+        delta, gamma, theta, vega, itm_prob = compute_greeks_full(
             option_type, spot, strike, iv, T, self.settings.risk_free_rate,
         )
         g = OptionGreeks(
@@ -186,6 +316,7 @@ class GreeksEngine:
             spot=spot, iv=iv if iv > 0 else None,
             time_to_expiry_years=T,
             delta=delta, gamma=gamma, theta=theta, vega=vega,
+            itm_prob=itm_prob,
             ts=now_ms(),
         )
         try:
@@ -218,10 +349,17 @@ class GreeksEngine:
         except (TypeError, ValueError):
             iv_f = 0.0
         try:
+            ltp_f = float(data.get("ltp") or 0.0)
+        except (TypeError, ValueError):
+            ltp_f = 0.0
+        try:
             expiry_d = date.fromisoformat(expiry_iso)
         except ValueError:
             return
-        self._compute_and_publish(index, strike, option_type, expiry_d, spot, iv_f)
+        self._compute_and_publish(
+            index, strike, option_type, expiry_d, spot, iv_f,
+            market_price=ltp_f,
+        )
 
     def _on_index_tick(self, data: dict) -> None:
         index = data.get("index")
@@ -267,8 +405,13 @@ class GreeksEngine:
                         iv = float(tick.get("iv") or 0.0)
                     except (TypeError, ValueError):
                         iv = 0.0
+                    try:
+                        ltp = float(tick.get("ltp") or 0.0)
+                    except (TypeError, ValueError):
+                        ltp = 0.0
                     self._compute_and_publish(
                         index, strike, option_type, expiry_d, spot, iv,
+                        market_price=ltp,
                     )
             if cursor == 0:
                 break

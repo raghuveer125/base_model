@@ -100,7 +100,10 @@ def chain(
     expiry: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$"),
 ) -> dict:
     _check_index(index)
+    from trading.derived import build_metrics
+
     store = LiveStore()
+    spot = store.get_spot(index)
     raw = store.get_chain(index, expiry)
     result: dict[int, dict] = {}
     for field, tick in raw.items():
@@ -112,9 +115,10 @@ def chain(
         if ot not in ("CE", "PE"):
             continue
         greeks = store.get_greeks(index, expiry, strike, ot)
+        metrics = build_metrics(tick, greeks, spot)
         row = result.setdefault(strike, {})
-        row[ot] = {"tick": tick, "greeks": greeks}
-    return {"index": index, "expiry": expiry, "strikes": result}
+        row[ot] = {"tick": tick, "greeks": greeks, "metrics": metrics}
+    return {"index": index, "expiry": expiry, "spot": spot, "strikes": result}
 
 
 @router.get("/candles/{index}")

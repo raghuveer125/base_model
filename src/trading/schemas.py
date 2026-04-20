@@ -85,6 +85,16 @@ class OptionTick(_Strict):
     oi: Annotated[int, Field(ge=0)] = 0
     oi_change: int = 0
     iv: float | None = None
+    # --- microstructure (optional, populated when the feed carries them) ---
+    bid: float | None = None
+    ask: float | None = None
+    bid_qty: int | None = None
+    ask_qty: int | None = None
+    volume: int | None = None
+    prev_close: float | None = None
+    change: float | None = None
+    change_pct: float | None = None
+    # ------------------------------------------------------------------------
     ts_exchange: Annotated[int, Field(ge=0)]
     ts_received: Annotated[int, Field(ge=0)]
 
@@ -186,6 +196,10 @@ class OptionGreeks(_Strict):
     gamma: float
     theta: float    # per calendar day
     vega: float     # per 1% σ
+    # Risk-neutral probability of finishing in-the-money at expiry:
+    #   CE: N(d2)        PE: N(-d2)
+    # Optional so older cached records still validate.
+    itm_prob: float | None = None
     ts: Annotated[int, Field(ge=0)]
 
     @field_validator("index")

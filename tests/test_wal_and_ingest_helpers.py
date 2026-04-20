@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from trading.ingest import Dedup, GapDetector
+from trading.ingest import Dedup, GapDetector, Orchestrator
 from trading.wal import WALReader, WALWriter
 
 
@@ -82,3 +82,15 @@ def test_gap_detector_per_symbol_isolation():
     g.observe("A", 3_500)
     g.observe("B", 1_200)
     assert [s for s, _ in fired] == ["A"]
+
+
+def test_depth_frame_detection():
+    """Depth payloads (L5 book) must route away from normalize_option_tick."""
+    # L5 book marker
+    assert Orchestrator._is_depth_only_frame({"bid1_price": 120, "ask1_price": 121}) is True
+    # 'type' marker
+    assert Orchestrator._is_depth_only_frame({"type": "dp"}) is True
+    # Plain SymbolUpdate must NOT be misclassified as depth.
+    symbol_update = {"symbol": "NSE:NIFTY26O0125000CE", "ltp": 120.5,
+                     "bid_price": 120.0, "ask_price": 121.0, "type": "sf"}
+    assert Orchestrator._is_depth_only_frame(symbol_update) is False
