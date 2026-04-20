@@ -18,7 +18,9 @@ from typing import Literal
 
 from trading.critical.state import Position
 
-ExitReason = Literal["stop", "time", "target", "regime_flip", "wall_break"]
+ExitReason = Literal[
+    "stop", "dollar_stop", "time", "target", "regime_flip", "wall_break",
+]
 
 
 @dataclass(frozen=True)
@@ -26,6 +28,14 @@ class ExitDecision:
     should_exit: bool
     reason: ExitReason | None = None
     detail: str = ""
+
+
+# Minimum position age (ms) before "soft" exits may fire. The hard stop
+# and time stop are ALWAYS evaluated — they're the safety net. Regime flip
+# and wall break are noisy near entry time (a wall already broken when we
+# entered shouldn't insta-close us; a regime flicker shouldn't either), so
+# they're gated on both age and adverse P&L.
+_MIN_SOFT_EXIT_AGE_MS = 5_000
 
 
 def evaluate(
@@ -37,26 +47,53 @@ def evaluate(
     spot: float | None = None,
     primary_resistance: int | None = None,
     primary_support: int | None = None,
+    max_loss_rupees: float | None = None,
 ) -> ExitDecision:
-    # 1. hard stop
+    age_ms = now_ms - pos.entry_ts_ms
+    adverse = ltp < pos.entry_ltp
+
+    # 0. DOLLAR-CAP STOP — highest priority. Fires the instant realized
+    # loss in rupees meets or exceeds `max_loss_rupees`, even if the tick
+    # gapped through `stop_ltp` (which is only a *price-level* trigger).
+    # Without this, a fast adverse move between ticks can realize a 4-5×
+    # loss vs the intended cap (observed live 2026-04-20: SENSEX -₹6,408
+    # and NIFTY50 -₹7,134 on a ₹1,500 cap).
+    if max_loss_rupees is not None:
+        qty = max(pos.lots * pos.lot_size, 1)
+        rupee_loss = (pos.entry_ltp - ltp) * qty
+        if rupee_loss >= max_loss_rupees:
+            return ExitDecision(
+                True, "dollar_stop",
+                f"loss={rupee_loss:.0f}>=cap={max_loss_rupees:.0f} "
+                f"(entry={pos.entry_ltp:.2f} ltp={ltp:.2f} qty={qty})",
+            )
+
+    # 1. hard stop — always on
     if ltp <= pos.stop_ltp:
         return ExitDecision(
             True, "stop",
             f"ltp={ltp:.2f}<=stop={pos.stop_ltp:.2f}",
         )
-    # 2. time stop
+    # 2. time stop — always on
     if now_ms >= pos.time_stop_ms:
         return ExitDecision(
             True, "time",
             f"now={now_ms}>=time_stop={pos.time_stop_ms}",
         )
-    # 3. profit target
+    # 3. profit target — always on
     if ltp >= pos.target_ltp:
         return ExitDecision(
             True, "target",
             f"ltp={ltp:.2f}>=target={pos.target_ltp:.2f}",
         )
-    # 4. regime flip — only triggers when regime bias is now opposite
+
+    # Gate the "soft" exits until the position has aged AND is actually
+    # losing money — avoids the insta-close when a condition was already
+    # true at entry time (stale OI wall, flickering regime).
+    if age_ms < _MIN_SOFT_EXIT_AGE_MS or not adverse:
+        return ExitDecision(False)
+
+    # 4. regime flip
     if pos.option_type == "CE" and regime_bias == "short":
         return ExitDecision(True, "regime_flip", "regime=short, held CE")
     if pos.option_type == "PE" and regime_bias == "long":

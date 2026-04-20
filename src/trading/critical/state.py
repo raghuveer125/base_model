@@ -80,6 +80,11 @@ class IndexState:
     last_loss_ts_ms: int = 0
     consecutive_losses: int = 0
     day_reset_date: str = ""
+    # Set by the engine when this index should be frozen for the rest of
+    # the session — e.g., a single loss exceeded `big_loss_rupees`, or the
+    # circuit-breaker consecutive-loss cap was hit. Cleared on day reset.
+    halted_today: bool = False
+    halted_reason: str = ""
 
     def get_strike(self, strike: int, ot: OptionType) -> StrikeHistory:
         key = (strike, ot)
@@ -96,6 +101,8 @@ class IndexState:
         self.day_reset_date = today_iso
         self.consecutive_losses = 0
         self.last_loss_ts_ms = 0
+        self.halted_today = False
+        self.halted_reason = ""
 
 
 @dataclass

@@ -16,9 +16,11 @@ Env vars (all optional, prefixed `CRITICAL_`):
 | `CRITICAL_DELTA_MAX`        | 0.65 | Maximum Δ for ITM entry |
 | `CRITICAL_MAX_CONCURRENT`   | 2    | Max indices with an open position |
 | `CRITICAL_COOLDOWN_S`       | 180  | Seconds of no-entry after a losing close |
-| `CRITICAL_CIRCUIT_LOSSES`   | 3    | Consecutive losses that halt trading for the day |
+| `CRITICAL_CIRCUIT_LOSSES`   | 2    | Consecutive losses that halt trading for the day |
+| `CRITICAL_BIG_LOSS_RUPEES`  | 2000 | Any single loss ≥ this halts the index for the day |
 | `CRITICAL_REGIME_INTERVAL_S`| 900  | How often to re-classify the regime (15 min default) |
 | `CRITICAL_REGIME_MIN_CONF` | 50   | Minimum regime confidence (0-100) required to allow entries |
+| `CRITICAL_MIN_AGREEMENT`   | 2    | Minimum number of same-side signals required to fire an entry |
 | `CRITICAL_TIME_STOP_S`      | 300  | Max seconds to hold before time-stop exit |
 | `CRITICAL_NO_TRADE_OPEN_MIN`| 15   | No entries in the first N minutes after open |
 | `CRITICAL_NO_TRADE_CLOSE_MIN`| 30  | No entries in the last N minutes before close |
@@ -95,6 +97,7 @@ class CriticalConfig:
     max_concurrent: int
     cooldown_s: int
     circuit_losses: int
+    big_loss_rupees: float
     regime_interval_s: int
     regime_min_confidence: int
     time_stop_s: int
@@ -118,7 +121,8 @@ def load_config() -> CriticalConfig:
         delta_max         = _get_float("CRITICAL_DELTA_MAX", 0.65),
         max_concurrent    = _get_int  ("CRITICAL_MAX_CONCURRENT", 2),
         cooldown_s        = _get_int  ("CRITICAL_COOLDOWN_S", 180),
-        circuit_losses    = _get_int  ("CRITICAL_CIRCUIT_LOSSES", 3),
+        circuit_losses    = _get_int  ("CRITICAL_CIRCUIT_LOSSES", 2),
+        big_loss_rupees   = _get_float("CRITICAL_BIG_LOSS_RUPEES", 2000.0),
         regime_interval_s = _get_int  ("CRITICAL_REGIME_INTERVAL_S", 900),
         regime_min_confidence = _get_int("CRITICAL_REGIME_MIN_CONF", 50),
         time_stop_s       = _get_int  ("CRITICAL_TIME_STOP_S", 300),

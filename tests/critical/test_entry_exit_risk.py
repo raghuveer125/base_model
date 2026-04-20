@@ -119,6 +119,36 @@ def test_exit_none_when_inside_guardrails():
     assert not d.should_exit
 
 
+# ----- dollar-cap stop (priority over price-level stop) -----
+
+def test_dollar_stop_fires_before_price_stop_on_gap_through():
+    # 2 lots × 75 = 150 qty. entry=100, ltp gapped to 80 (-20/unit ×
+    # 150 = 3000 loss) — well past the 1500 dollar cap even though
+    # the price-level stop_ltp=90 wasn't reached in isolation.
+    pos = Position(
+        index="NIFTY50", expiry_iso="2026-04-28", strike=25_000,
+        option_type="CE", lots=2, lot_size=75,
+        entry_ltp=100.0, entry_ts_ms=0,
+        target_ltp=115.0, stop_ltp=90.0, time_stop_ms=1_000_000,
+    )
+    d = evaluate_exit(pos, ltp=80.0, now_ms=10,
+                       regime_bias="long", max_loss_rupees=1500.0)
+    assert d.should_exit and d.reason == "dollar_stop"
+
+def test_dollar_stop_does_not_fire_inside_cap():
+    pos = Position(
+        index="NIFTY50", expiry_iso="2026-04-28", strike=25_000,
+        option_type="CE", lots=2, lot_size=75,
+        entry_ltp=100.0, entry_ts_ms=0,
+        target_ltp=115.0, stop_ltp=90.0, time_stop_ms=1_000_000,
+    )
+    # -5 per unit × 150 = 750 loss, under 1500 cap → price-level stop
+    # hasn't fired either → no exit.
+    d = evaluate_exit(pos, ltp=95.0, now_ms=10,
+                       regime_bias="long", max_loss_rupees=1500.0)
+    assert not d.should_exit
+
+
 # ----- build_exit_levels -----
 
 def test_build_exit_levels_respects_rupee_cap():
@@ -221,3 +251,16 @@ def test_allow_entry_allowed_on_clean_state():
                      no_trade_open_min=15, no_trade_close_min=30)
     assert g.allowed
     assert g.reason == "ok"
+
+def test_allow_entry_blocked_by_halted_today():
+    st = CriticalState()
+    s = st.get("NIFTY50")
+    s.halted_today = True
+    s.halted_reason = "big_loss=5200"
+    g = allow_entry(st, "NIFTY50",
+                     ts_ms=_midday_ms(),
+                     max_concurrent=2, cooldown_s=180,
+                     circuit_losses=3,
+                     no_trade_open_min=15, no_trade_close_min=30)
+    assert not g.allowed
+    assert g.reason.startswith("halted_today")

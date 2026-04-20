@@ -67,6 +67,8 @@ def allow_entry(
     idx_state = state.get(index)
     if idx_state.position is not None:
         return RiskGate(False, "index_already_open")
+    if idx_state.halted_today:
+        return RiskGate(False, f"halted_today ({idx_state.halted_reason})")
     if state.concurrent_open() >= max_concurrent:
         return RiskGate(False, "max_concurrent_reached")
     if idx_state.consecutive_losses >= circuit_losses:

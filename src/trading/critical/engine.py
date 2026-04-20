@@ -126,7 +126,13 @@ class CriticalEngine:
                 if self._stop.wait(1.0):
                     return
 
+    _DISPATCH_LOG_EVERY = 500   # log 1-in-N dispatches to prove subscription is alive
+
     def _dispatch(self, channel: str, data: dict) -> None:
+        self._dispatch_count = getattr(self, "_dispatch_count", 0) + 1
+        if self._dispatch_count % self._DISPATCH_LOG_EVERY == 1:
+            log.info("critical_dispatch_tick",
+                     channel=channel, total=self._dispatch_count)
         try:
             if channel.startswith("ticks.option."):
                 self._on_option_tick(data)
@@ -190,11 +196,25 @@ class CriticalEngine:
 
     # ---- entry evaluation ----
 
+    _ENTRY_DEBUG_EVERY_MS = 5_000   # one diagnostic per index per 5s
+
+    def _debug_entry(self, index: str, stage: str, **kw) -> None:
+        """Throttled "why didn't it fire" log — one line per index per 5s."""
+        now = now_ms()
+        last = getattr(self, "_last_debug_ms", {})
+        if now - last.get((index, stage), 0) < self._ENTRY_DEBUG_EVERY_MS:
+            return
+        last[(index, stage)] = now
+        self._last_debug_ms = last
+        log.info("critical_entry_skip", index=index, stage=stage, **kw)
+
     def _try_entry(self, index: str) -> None:
         expiry = self._expiries.get(index)
         if expiry is None:
+            self._debug_entry(index, "no_expiry")
             return
         if index not in self.cfg.lots_per_index:
+            self._debug_entry(index, "no_lots_config")
             return
         gate = risk_gate(
             self.state, index, ts_ms=now_ms(),
@@ -205,6 +225,7 @@ class CriticalEngine:
             no_trade_close_min=self.cfg.no_trade_close_min,
         )
         if not gate.allowed:
+            self._debug_entry(index, "risk_gate", reason=gate.reason)
             return
 
         rows = self.market.get_chain_snapshot(index, expiry.isoformat())
@@ -357,6 +378,7 @@ class CriticalEngine:
             spot=spot,
             primary_resistance=levels.primary_resistance,
             primary_support=levels.primary_support,
+            max_loss_rupees=self.cfg.max_loss_rupees,
         )
         if not decision.should_exit:
             return
@@ -377,6 +399,23 @@ class CriticalEngine:
             if pnl < 0:
                 idx_state.consecutive_losses += 1
                 idx_state.last_loss_ts_ms = now_ms()
+                # Single-trade catastrophic loss halts the index for the
+                # rest of the session — stops one bad print from blowing
+                # out the rest of the day.
+                if abs(pnl) >= self.cfg.big_loss_rupees:
+                    idx_state.halted_today = True
+                    idx_state.halted_reason = (
+                        f"big_loss={abs(pnl):.0f}>={self.cfg.big_loss_rupees:.0f}"
+                    )
+                    log.warning("critical_index_halted",
+                                index=index, reason=idx_state.halted_reason)
+                elif idx_state.consecutive_losses >= self.cfg.circuit_losses:
+                    idx_state.halted_today = True
+                    idx_state.halted_reason = (
+                        f"circuit_losses={idx_state.consecutive_losses}"
+                    )
+                    log.warning("critical_index_halted",
+                                index=index, reason=idx_state.halted_reason)
             else:
                 idx_state.consecutive_losses = 0
 
