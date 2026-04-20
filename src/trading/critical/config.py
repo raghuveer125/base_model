@@ -30,6 +30,34 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
+
+
+def _load_dotenv_once() -> None:
+    """Populate `os.environ` from `.env` at the repo root.
+
+    The base-model `trading.config.Settings` uses pydantic-settings which
+    reads `.env` into model fields but does NOT export them to the
+    process environment — which is how `critical` reads its own config.
+    Calling `dotenv.load_dotenv` here fills that gap.
+
+    Kept soft so the package still imports if `python-dotenv` is ever
+    removed (it's currently a transitive dep of pydantic-settings).
+    """
+    try:
+        from dotenv import load_dotenv  # type: ignore[import-not-found]
+    except ImportError:
+        return
+    # Walk up from this file until we find a `.env`. Works whether the
+    # package was installed editable or copied into another project.
+    here = Path(__file__).resolve()
+    for parent in (here.parent, *here.parents):
+        env_path = parent / ".env"
+        if env_path.is_file():
+            load_dotenv(env_path, override=False)
+            return
+    # Fall back to cwd — dotenv's default search.
+    load_dotenv(override=False)
 
 
 def _get_int(k: str, default: int) -> int:
@@ -76,6 +104,7 @@ class CriticalConfig:
 
 
 def load_config() -> CriticalConfig:
+    _load_dotenv_once()
     return CriticalConfig(
         lots_per_index={
             "NIFTY50":   _get_int("CRITICAL_LOTS_NIFTY50", 2),
