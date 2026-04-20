@@ -12,7 +12,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
+from threading import Lock
 from typing import Literal
+
+import orjson
 
 from trading.critical.entry import EntryCandidate
 from trading.critical.state import Position
@@ -21,6 +25,12 @@ from trading.events import EventBus
 from trading.orders.base import Fill, Order
 from trading.orders.paper import PaperExecutor
 from trading.schemas import FYERS_INDEX_SYMBOL, INDEX_OPTION_ROOT, now_ms
+
+# Append-only JSONL that captures every entry/exit/rejection as it
+# happens. Read back by the UI to show a full trade table. Gitignored
+# under `logs/critical/` like the other outputs of this package.
+_TRADES_JSONL = Path("logs/critical/trades.jsonl").resolve()
+_TRADES_LOCK = Lock()
 
 # Lot sizes as of the SEBI Nov-2024 revision. Could be moved to config
 # later if exchanges revise again.
@@ -159,13 +169,20 @@ class ScalpExecutor:
 
     def _publish_event(self, kind: ScalpEvent | str, index: str,
                         data: dict) -> None:
+        payload = {"kind": kind, "ts": now_ms(), "index": index, **data}
+        # 1) live pub/sub for the UI's signal feed
         try:
-            self._bus.publish(f"scalp.{index}", {
-                "kind": kind,
-                "ts": now_ms(),
-                **data,
-            })
+            self._bus.publish(f"scalp.{index}", payload)
         except Exception:   # noqa: BLE001 — observability must never block trading
+            pass
+        # 2) append to the persistent trade log so the "Paper" tab can
+        #    replay the full day even after a UI reload
+        try:
+            _TRADES_JSONL.parent.mkdir(parents=True, exist_ok=True)
+            line = orjson.dumps(payload) + b"\n"
+            with _TRADES_LOCK, open(_TRADES_JSONL, "ab") as f:
+                f.write(line)
+        except Exception:   # noqa: BLE001
             pass
 
 

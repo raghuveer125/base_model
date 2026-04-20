@@ -63,6 +63,78 @@ def indices() -> list[str]:
     return get_settings().index_list
 
 
+@router.get("/critical/trades")
+def critical_trades(limit: int = Query(100, ge=1, le=2000)) -> list[dict]:
+    """Read the append-only `logs/critical/trades.jsonl` and return the
+    last `limit` entries as paired rows: each ENTRY gets its matching
+    EXIT attached (by index+strike+option_type+open-time) so the UI can
+    render a single row per trade.
+
+    Order: newest first.
+    Events with no matching exit stay as `status: "open"`.
+    """
+    from pathlib import Path
+    path = Path("logs/critical/trades.jsonl").resolve()
+    if not path.is_file():
+        return []
+    try:
+        lines = path.read_bytes().splitlines()
+    except OSError:
+        return []
+
+    events: list[dict] = []
+    for raw in lines:
+        if not raw:
+            continue
+        try:
+            events.append(orjson.loads(raw))
+        except Exception:   # noqa: BLE001
+            continue
+
+    # Walk chronologically, pair each ENTRY to its next matching EXIT.
+    # Key = (index, strike, option_type, side of the entry tick)
+    open_by_key: dict[tuple, dict] = {}
+    paired: list[dict] = []
+    for ev in events:
+        kind = ev.get("kind")
+        if kind == "entry_rejected":
+            paired.append({"status": "rejected", **ev})
+            continue
+        key = (ev.get("index"), ev.get("strike"), ev.get("side"))
+        if kind == "entry":
+            open_by_key[key] = ev
+            continue
+        if kind == "exit":
+            entry = open_by_key.pop(key, None)
+            paired.append({
+                "status": "closed",
+                "index": ev.get("index"),
+                "strike": ev.get("strike"),
+                "side": ev.get("side"),
+                "entry_ts": entry.get("ts") if entry else None,
+                "entry_ltp": (entry or {}).get("entry_ltp"),
+                "lots": (entry or {}).get("lots"),
+                "qty": (entry or {}).get("qty"),
+                "target": (entry or {}).get("target"),
+                "stop": (entry or {}).get("stop"),
+                "reasons": (entry or {}).get("reasons") or [],
+                "confidence": (entry or {}).get("confidence"),
+                "exit_ts": ev.get("ts"),
+                "exit_ltp": ev.get("exit_ltp"),
+                "pnl": ev.get("pnl"),
+                "reason": ev.get("reason"),
+                "held_ms": ev.get("held_ms"),
+                "instrument": ev.get("instrument") or (entry or {}).get("instrument"),
+            })
+    # Any still-open positions
+    for entry in open_by_key.values():
+        paired.append({"status": "open", **entry})
+
+    paired.sort(key=lambda r: r.get("exit_ts") or r.get("ts") or r.get("entry_ts") or 0,
+                 reverse=True)
+    return paired[:limit]
+
+
 @router.get("/critical/validation")
 def critical_validation() -> dict:
     """Live paper-trading summary written by `trading.critical.validator`.

@@ -309,6 +309,81 @@ table#chain td.strike .badges { display: flex; gap: 3px; justify-content: center
 .paper-strip .pos { color: var(--green); }
 .paper-strip .neg { color: var(--red); }
 
+/* ---- Paper tab (full trade table) ---- */
+
+#view-paper { padding: 1rem 1.25rem; overflow: auto; }
+.paper-head { display: flex; align-items: center; gap: 1rem; margin-bottom: 0.75rem; }
+.paper-head h2 { margin: 0; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--muted); font-size: 0.92rem; }
+.paper-head #paper-overall { font-family: var(--mono); font-size: 0.92rem; }
+.paper-head #paper-overall b { color: var(--accent); font-weight: 700; }
+.paper-head #paper-overall .pos { color: var(--green); }
+.paper-head #paper-overall .neg { color: var(--red); }
+.paper-head button {
+  margin-left: auto;
+  background: var(--accent); color: #0b1220;
+  border: 0; border-radius: 4px; padding: 0.3rem 0.8rem;
+  cursor: pointer; font: inherit;
+}
+
+.paper-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+.paper-card {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 8px; padding: 0.75rem 0.9rem;
+}
+.paper-card h3 { margin: 0 0 0.5rem; color: var(--accent);
+  font-family: var(--mono); font-size: 0.95rem; }
+.paper-card .row {
+  display: flex; justify-content: space-between;
+  padding: 0.18rem 0; font-family: var(--mono); font-size: 0.82rem;
+  border-bottom: 1px dashed var(--border);
+}
+.paper-card .row:last-child { border-bottom: 0; }
+.paper-card .row span { color: var(--muted); }
+.paper-card .row b    { color: var(--fg); font-weight: 600; }
+.paper-card .row b.pos { color: var(--green); }
+.paper-card .row b.neg { color: var(--red); }
+.paper-card .reasons b { font-family: var(--mono); font-size: 0.72rem;
+  color: var(--muted); font-weight: 400; }
+
+.paper-table-head { display: flex; align-items: baseline; gap: 0.75rem;
+  margin: 0.5rem 0 0.4rem; }
+.paper-table-head h3 { margin: 0; font-size: 0.82rem; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--muted); }
+
+.paper-table-wrap { overflow-x: auto; border: 1px solid var(--border);
+  border-radius: 6px; background: var(--panel); }
+table#paper-trades { width: 100%; border-collapse: collapse;
+  font-family: var(--mono); font-size: 0.8rem; }
+table#paper-trades th, table#paper-trades td {
+  padding: 0.35rem 0.55rem; border-bottom: 1px solid var(--border);
+  text-align: left; white-space: nowrap;
+}
+table#paper-trades td.num { text-align: right; font-variant-numeric: tabular-nums; }
+table#paper-trades thead th { color: var(--muted); font-weight: 500;
+  background: #0b1220; position: sticky; top: 0; }
+
+table#paper-trades td.side-CE { color: var(--green); font-weight: 600; }
+table#paper-trades td.side-PE { color: var(--red); font-weight: 600; }
+table#paper-trades td.pos { color: var(--green); }
+table#paper-trades td.neg { color: var(--red); }
+table#paper-trades td.reason { color: var(--muted); }
+table#paper-trades td.status { text-transform: uppercase; font-size: 0.72rem;
+  letter-spacing: 0.04em; }
+
+table#paper-trades tr.status-win    td.status { color: var(--green); }
+table#paper-trades tr.status-loss   td.status { color: var(--red); }
+table#paper-trades tr.status-open   td.status { color: var(--accent); }
+table#paper-trades tr.status-rejected td.status { color: var(--muted); }
+table#paper-trades tr.status-win:hover    { background: #3fb95010; }
+table#paper-trades tr.status-loss:hover   { background: #f8514910; }
+table#paper-trades tr:hover { background: #1f6feb10; }
+
 /* ---- Metrics view ---- */
 
 .view[hidden] { display: none; }

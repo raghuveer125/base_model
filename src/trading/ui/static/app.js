@@ -6,6 +6,7 @@
   const METRICS_TAB = "__metrics__";
   const REPLAY_TAB = "__replay__";
   const HEALTH_TAB = "__health__";
+  const PAPER_TAB = "__paper__";
 
   const state = {
     indices: [],
@@ -24,6 +25,7 @@
     atm: null,
     metricsTimer: null,
     healthTimer: null,
+    paperTimer: null,
     replayCurrentId: null,     // currently-inspected run on Replay tab
     mode: "live",              // "live" | "replay" for index tabs
     replayMode: {              // populated when mode === "replay"
@@ -62,6 +64,8 @@
       }
     });
     $("candles-max").addEventListener("click", toggleMaximizeCandles);
+    const paperRefreshBtn = $("paper-refresh");
+    if (paperRefreshBtn) paperRefreshBtn.addEventListener("click", loadPaperTrades);
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && $("candles-section").classList.contains("maximized")) {
         toggleMaximizeCandles();
@@ -102,6 +106,7 @@
     if (state.current === METRICS_TAB) p.set("tab", "metrics");
     else if (state.current === HEALTH_TAB) p.set("tab", "health");
     else if (state.current === REPLAY_TAB) p.set("tab", "replay");
+    else if (state.current === PAPER_TAB) p.set("tab", "paper");
     else if (state.current) p.set("index", state.current);
     const qs = p.toString();
     const next = qs ? `${location.pathname}?${qs}` : location.pathname;
@@ -133,6 +138,7 @@
     if (tab === "metrics") target = METRICS_TAB;
     else if (tab === "health") target = HEALTH_TAB;
     else if (tab === "replay") target = REPLAY_TAB;
+    else if (tab === "paper") target = PAPER_TAB;
     else if (index) target = index;
     else target = state.indices[0];
 
@@ -155,6 +161,7 @@
       ...state.indices.map((idx) => [idx, idx]),
       [METRICS_TAB, "Metrics"],
       [HEALTH_TAB, "Health"],
+      [PAPER_TAB, "Paper"],
       [REPLAY_TAB, "Replay"],
     ];
     for (const [key, label] of buttons) {
@@ -173,6 +180,7 @@
     if (state.reconnectTimer) { clearTimeout(state.reconnectTimer); state.reconnectTimer = null; }
     if (state.metricsTimer) { clearInterval(state.metricsTimer); state.metricsTimer = null; }
     if (state.healthTimer)  { clearInterval(state.healthTimer);  state.healthTimer  = null; }
+    if (state.paperTimer)   { clearInterval(state.paperTimer);   state.paperTimer   = null; }
 
     state.current = key;
     renderTabs();
@@ -189,6 +197,11 @@
       }
       if (key === REPLAY_TAB) {
         loadReplayList();
+        return;
+      }
+      if (key === PAPER_TAB) {
+        loadPaperTrades();
+        state.paperTimer = setInterval(loadPaperTrades, 5000);
         return;
       }
       // Index tab
@@ -220,11 +233,14 @@
     const metrics = $("view-metrics");
     const replay = $("view-replay");
     const health = $("view-health");
+    const paper = $("view-paper");
     live.hidden = true; metrics.hidden = true;
     replay.hidden = true; health.hidden = true;
+    if (paper) paper.hidden = true;
     if (key === METRICS_TAB) metrics.hidden = false;
     else if (key === REPLAY_TAB) replay.hidden = false;
     else if (key === HEALTH_TAB) health.hidden = false;
+    else if (key === PAPER_TAB && paper) paper.hidden = false;
     else live.hidden = false;
   }
 
@@ -549,6 +565,102 @@
     } catch (e) {
       el.textContent = "paper: err";
     }
+  }
+
+  // ---------- Paper tab: full trade table + per-index cards ----------
+
+  async function loadPaperTrades() {
+    try {
+      const [tradesRes, valRes] = await Promise.all([
+        fetch("/api/critical/trades?limit=200"),
+        fetch("/api/critical/validation"),
+      ]);
+      const trades = tradesRes.ok ? await tradesRes.json() : [];
+      const val = valRes.ok ? await valRes.json() : {};
+      renderPaperTrades(trades, val);
+    } catch (e) {
+      const body = $("paper-trades-body");
+      if (body) body.innerHTML = `<tr><td colspan="14" class="muted">error loading trades</td></tr>`;
+    }
+  }
+
+  function renderPaperTrades(trades, val) {
+    // ---- overall header ----
+    const o = (val && val.overall) || {};
+    const pnl = Number(o.total_pnl ?? 0);
+    $("paper-overall").innerHTML =
+      `entries <b>${o.entries ?? 0}</b> · ` +
+      `closed <b>${o.closed ?? 0}</b> · ` +
+      `W/L <b>${o.wins ?? 0}/${o.losses ?? 0}</b> · ` +
+      `hit <b>${Math.round((o.hit_rate ?? 0) * 100)}%</b> · ` +
+      `pnl <b class="${pnl >= 0 ? "pos" : "neg"}">₹${(pnl >= 0 ? "+" : "") + pnl.toFixed(2)}</b>`;
+
+    // ---- per-index cards ----
+    const per = (val && val.per_index) || {};
+    const cards = Object.entries(per)
+      .filter(([, s]) => s.entries || s.exits)
+      .map(([idx, s]) => {
+        const p = Number(s.total_pnl ?? 0);
+        const reasons = Object.entries(s.by_reason || {})
+          .map(([k, v]) => `${k}:${v}`).join(" · ");
+        return `<div class="paper-card">
+          <h3>${idx}</h3>
+          <div class="row"><span>Entries</span><b>${s.entries ?? 0}</b></div>
+          <div class="row"><span>W / L</span><b>${s.wins ?? 0} / ${s.losses ?? 0}</b></div>
+          <div class="row"><span>Hit</span><b>${Math.round((s.hit_rate ?? 0) * 100)}%</b></div>
+          <div class="row"><span>PnL</span><b class="${p >= 0 ? "pos" : "neg"}">${(p >= 0 ? "+" : "") + p.toFixed(2)}</b></div>
+          <div class="row"><span>Avg hold</span><b>${(s.avg_hold_s ?? 0).toFixed(0)} s</b></div>
+          <div class="row reasons"><span>Exits</span><b>${reasons || "—"}</b></div>
+        </div>`;
+      })
+      .join("");
+    $("paper-cards").innerHTML = cards || `<div class="muted">no trades yet today</div>`;
+
+    // ---- full trades table ----
+    const body = $("paper-trades-body");
+    const countEl = $("paper-trade-count");
+    const rows = trades.map((t) => {
+      const status = t.status || "?";
+      const pnlN = Number(t.pnl ?? 0);
+      const pnlCls = pnlN > 0 ? "pos" : (pnlN < 0 ? "neg" : "");
+      const pnlTxt = t.pnl != null
+        ? (pnlN >= 0 ? "+" : "") + pnlN.toFixed(2)
+        : "—";
+      const hold = t.held_ms != null ? Math.round(t.held_ms / 1000) : "—";
+      const when = t.exit_ts
+        ? fmtTime(t.exit_ts)
+        : (t.entry_ts ? fmtTime(t.entry_ts) + " (open)" : "");
+      const reasons = (t.reasons || []).join(" · ");
+      const entryLtp = t.entry_ltp != null ? Number(t.entry_ltp).toFixed(2) : "—";
+      const exitLtp = t.exit_ltp != null ? Number(t.exit_ltp).toFixed(2) : "—";
+      const stop = t.stop != null ? Number(t.stop).toFixed(2) : "—";
+      const target = t.target != null ? Number(t.target).toFixed(2) : "—";
+      const lotsQty = t.lots != null
+        ? `${t.lots}×${(t.qty ?? 0)}`
+        : "—";
+      const statusCls =
+        status === "open" ? "status-open" :
+        status === "rejected" ? "status-rejected" :
+        (pnlN >= 0 ? "status-win" : "status-loss");
+      return `<tr class="${statusCls}">
+        <td class="num">${when}</td>
+        <td>${t.index ?? ""}</td>
+        <td class="side-${t.side ?? ""}">${t.side ?? ""}</td>
+        <td class="num">${t.strike ?? ""}</td>
+        <td class="num">${lotsQty}</td>
+        <td class="num">${entryLtp}</td>
+        <td class="num">${exitLtp}</td>
+        <td class="num">${stop}</td>
+        <td class="num">${target}</td>
+        <td class="num ${pnlCls}"><b>${pnlTxt}</b></td>
+        <td class="num">${hold}</td>
+        <td class="reason">${t.reason ?? "—"}</td>
+        <td class="status">${status}</td>
+        <td class="reasons muted" title="${reasons}">${reasons.length > 60 ? reasons.slice(0, 57) + "…" : reasons}</td>
+      </tr>`;
+    }).join("");
+    body.innerHTML = rows || `<tr><td colspan="14" class="muted">no trades yet today</td></tr>`;
+    if (countEl) countEl.textContent = `${trades.length} rows`;
   }
 
   let renderPending = false;
