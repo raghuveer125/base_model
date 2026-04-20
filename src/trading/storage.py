@@ -70,16 +70,41 @@ class LiveStore:
         raw = self.r.get(f"tpp:last_seen:{index}")
         return int(raw) if raw is not None else None
 
-    def set_option_tick(self, tick: OptionTick) -> None:
+    def set_option_tick(self, tick: OptionTick) -> dict:
+        """Write the tick to Redis and return the exact payload that was
+        written. Callers (ingest) should publish this returned dict — not
+        `tick.model_dump()` — so WebSocket subscribers see the same
+        OI-preserved view as the chain hash.
+        """
         expiry = tick.expiry.isoformat()
         key_latest = f"tpp:tick:opt:{tick.index}:{expiry}:{tick.strike}:{tick.option_type}"
         key_chain = f"tpp:chain:{tick.index}:{expiry}"
         field = f"{tick.strike}:{tick.option_type}"
-        body = orjson.dumps(tick.model_dump(mode="json"))
+        payload = tick.model_dump(mode="json")
+
+        # Fyers WS strips OI from option ticks (see oi_poller.py). The REST
+        # poller fills OI via merge_option_oi. If this incoming WS-sourced tick
+        # has oi==0 but a previous record carried a real value, preserve it —
+        # otherwise each fresh WS tick would clobber the OI the poller just
+        # wrote, leaving OI stuck at 0 forever.
+        if payload.get("oi", 0) == 0:
+            prev_raw = self.r.get(key_latest)
+            if prev_raw:
+                try:
+                    prev = orjson.loads(prev_raw)
+                except (ValueError, TypeError):
+                    prev = None
+                if prev and prev.get("oi", 0):
+                    payload["oi"] = prev["oi"]
+                    if prev.get("oi_change") is not None:
+                        payload["oi_change"] = prev["oi_change"]
+
+        body = orjson.dumps(payload)
         pipe = self.r.pipeline(transaction=False)
         pipe.set(key_latest, body)
         pipe.hset(key_chain, field, body)
         pipe.execute()
+        return payload
 
     def set_atm(self, index: str, atm: int) -> None:
         self.r.set(f"tpp:atm:{index}", atm)
@@ -87,26 +112,24 @@ class LiveStore:
     def merge_option_oi(
         self, index: str, expiry: str, strike: int, option_type: str,
         oi: int, oi_change: int | None = None,
-    ) -> bool:
+    ) -> dict | None:
         """Overlay OI onto the cached option tick without clobbering LTP/quotes.
 
-        Fyers WS SymbolUpdate doesn't carry OI for options; DepthUpdate frames
-        do. Those frames often lack a fresh LTP, so we merge (read-modify-write)
-        rather than pushing a second OptionTick that would overwrite the price.
-
-        Returns True if a tick record existed and was updated. The ingest
-        thread is single-threaded, so the R-M-W is race-free.
+        Fyers WS doesn't carry OI for options (the library strips it). The
+        REST poller fills it via this merge. Returns the merged dict when a
+        record existed — callers can publish it so live WS subscribers see
+        the OI update immediately. Returns None when there's no tick yet.
         """
         key_latest = f"tpp:tick:opt:{index}:{expiry}:{strike}:{option_type}"
         key_chain = f"tpp:chain:{index}:{expiry}"
         field = f"{strike}:{option_type}"
         raw = self.r.get(key_latest)
         if not raw:
-            return False
+            return None
         try:
             tick_dict = orjson.loads(raw)
         except (ValueError, TypeError):
-            return False
+            return None
         tick_dict["oi"] = int(oi)
         if oi_change is not None:
             tick_dict["oi_change"] = int(oi_change)
@@ -115,7 +138,7 @@ class LiveStore:
         pipe.set(key_latest, body)
         pipe.hset(key_chain, field, body)
         pipe.execute()
-        return True
+        return tick_dict
 
     def get_chain(self, index: str, expiry: str) -> dict[str, dict]:
         raw = self.r.hgetall(f"tpp:chain:{index}:{expiry}")

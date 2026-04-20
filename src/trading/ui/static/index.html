@@ -4,7 +4,8 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Trading_Plug&amp;Play</title>
-<link rel="stylesheet" href="/style.css" />
+<link rel="stylesheet" href="/style.css?v=6" />
+<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
   <header>
@@ -50,17 +51,20 @@
           </tr>
           <tr>
             <th title="Open Interest">OI</th>
-            <th title="OI change">&Delta;OI</th>
+            <th title="OI change" class="hide-sm">&Delta;OI</th>
             <th title="Volume traded today">Vol</th>
-            <th title="Volume / OI — churn">V/OI</th>
+            <th title="Volume / OI — churn" class="hide-sm">V/OI</th>
             <th title="Implied volatility (annualized, decimal)">IV</th>
-            <th>&Delta;</th><th>&Gamma;</th><th>&Theta;</th><th>&nu;</th>
-            <th title="Probability ITM at expiry — N(d2)">ITM%</th>
-            <th title="Time value = LTP − intrinsic">TV</th>
+            <th>&Delta;</th>
+            <th class="hide-md">&Gamma;</th>
+            <th class="hide-sm">&Theta;</th>
+            <th class="hide-sm">&nu;</th>
+            <th title="Probability ITM at expiry — N(d2)" class="hide-md">ITM%</th>
+            <th title="Time value = LTP − intrinsic" class="hide-md">TV</th>
             <th title="(ask−bid)/mid × 100">Sprd%</th>
             <th title="Bid × qty">Bid×Q</th>
             <th>LTP</th>
-            <th title="Change vs prev close">Chg</th>
+            <th title="Change vs prev close" class="hide-sm">Chg</th>
             <th title="Change % vs prev close">Chg%</th>
             <th title="Ask × qty">Ask×Q</th>
 
@@ -68,17 +72,20 @@
 
             <th title="Bid × qty">Bid×Q</th>
             <th>LTP</th>
-            <th title="Change vs prev close">Chg</th>
+            <th title="Change vs prev close" class="hide-sm">Chg</th>
             <th title="Change %">Chg%</th>
             <th title="Ask × qty">Ask×Q</th>
             <th title="Spread %">Sprd%</th>
-            <th title="Time value">TV</th>
-            <th title="Probability ITM at expiry">ITM%</th>
-            <th>&nu;</th><th>&Theta;</th><th>&Gamma;</th><th>&Delta;</th>
+            <th title="Time value" class="hide-md">TV</th>
+            <th title="Probability ITM at expiry" class="hide-md">ITM%</th>
+            <th class="hide-sm">&nu;</th>
+            <th class="hide-sm">&Theta;</th>
+            <th class="hide-md">&Gamma;</th>
+            <th>&Delta;</th>
             <th>IV</th>
-            <th title="Volume / OI">V/OI</th>
+            <th title="Volume / OI" class="hide-sm">V/OI</th>
             <th>Vol</th>
-            <th>&Delta;OI</th>
+            <th class="hide-sm">&Delta;OI</th>
             <th>OI</th>
           </tr>
         </thead>
@@ -87,8 +94,16 @@
     </section>
 
     <section id="candles-section">
-      <h2>Candles (1m)</h2>
-      <ul id="candles" class="feed"></ul>
+      <div class="section-head candle-head">
+        <h2>Candles</h2>
+        <select id="tf-select" aria-label="Candle timeframe">
+          <option value="1m">1m</option>
+          <option value="5m">5m</option>
+          <option value="15m">15m</option>
+        </select>
+        <button id="candles-max" type="button" title="Maximize">⤢</button>
+      </div>
+      <div id="candle-chart"></div>
     </section>
 
     <section id="signals-section">
@@ -189,6 +204,6 @@
     </section>
   </main>
 
-  <script src="/app.js"></script>
+  <script src="/app.js?v=6"></script>
 </body>
 </html>

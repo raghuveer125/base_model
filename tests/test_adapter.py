@@ -44,11 +44,12 @@ def test_parse_weekly_symbol_october_day_one():
 
 
 def test_parse_monthly_symbol_banknifty():
+    # Monthly BANKNIFTY (last Tuesday of the month — post-Nov-2024 convention).
+    # 2026-02: Tuesdays are 3, 10, 17, 24 → last = 24.
     p = parse_option_symbol("NSE:BANKNIFTY26FEB52000CE")
     assert p is not None
     assert p.root == "BANKNIFTY"
-    assert p.expiry.year == 2026
-    assert p.expiry.month == 2
+    assert p.expiry == date(2026, 2, 24)
 
 
 def test_parse_bad_symbol_returns_none():
@@ -140,8 +141,9 @@ def test_normalize_option_tick_missing_microstructure_is_none():
 
 
 def test_build_option_subscription_monthly_uses_mmm_format():
-    # 2026-04-30 is the last Thursday of April 2026 → monthly → YY+MMM.
-    syms = build_option_subscription("NIFTY50", date(2026, 4, 30),
+    # 2026-04-28 is the last Tuesday of April 2026 → monthly → YY+MMM.
+    # (NIFTY monthly moved to last Tuesday in Oct 2024.)
+    syms = build_option_subscription("NIFTY50", date(2026, 4, 28),
                                      spot=25_012, window=2)
     assert len(syms) == 10
     assert all(s.startswith("NSE:NIFTY26APR") for s in syms)

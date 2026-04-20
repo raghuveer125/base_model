@@ -82,17 +82,19 @@ def parse_option_symbol(symbol: str) -> ParsedOptionSymbol | None:
             return None
         return ParsedOptionSymbol(
             exchange=m["exch"], root=m["root"],
-            expiry=date(yy, mon, _last_thursday(yy, mon)),
+            expiry=date(yy, mon, _last_tuesday(yy, mon)),
             strike=int(m["strike"]),
             option_type=m["ot"],  # type: ignore[arg-type]
         )
     return None
 
 
-def _last_thursday(year: int, month: int) -> int:
+def _last_tuesday(year: int, month: int) -> int:
+    """Last Tuesday of the month — the post-SEBI-2024 monthly F&O expiry day
+    for NIFTY, BANKNIFTY, and SENSEX. Was last Thursday pre-Oct-2024 for NSE."""
     for week in reversed(calendar.monthcalendar(year, month)):
-        if week[calendar.THURSDAY] != 0:
-            return week[calendar.THURSDAY]
+        if week[calendar.TUESDAY] != 0:
+            return week[calendar.TUESDAY]
     return 28
 
 
@@ -240,7 +242,14 @@ def build_index_subscription(indices: Iterable[str]) -> list[str]:
 
 
 def _is_last_weekday_of_month(d: date) -> bool:
-    """True if `d` is the final occurrence of its weekday in its calendar month."""
+    """True if `d` is the final occurrence of its weekday in its calendar month.
+
+    Fyers uses the monthly symbol format (e.g. NIFTY26APR25000CE) whenever an
+    expiry falls on the last occurrence of its weekday in the month — which
+    applies to NIFTY (last Tuesday post-Oct-2024), BANKNIFTY (last Tuesday
+    post-Nov-2024 monthly-only) and SENSEX (last Tuesday). Weekly format is
+    used for mid-month weekly expiries.
+    """
     cal = calendar.monthcalendar(d.year, d.month)
     wd = d.weekday()
     for week in reversed(cal):

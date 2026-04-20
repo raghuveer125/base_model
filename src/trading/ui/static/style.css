@@ -111,16 +111,31 @@ nav#tabs button {
 nav#tabs button.active { background: var(--accent); color: #0b1220; border-color: var(--accent); }
 nav#tabs button:hover:not(.active) { border-color: var(--accent); }
 
-main {
+/* Chain is the primary view: give it the FULL width up top, then stack
+   candles + signals side-by-side in a shorter row below it. This replaces
+   the old 2-column "chain + right rail" layout, which wasted horizontal
+   space on ultrawides when the feeds were near-empty. */
+main, main#view-live {
   display: grid;
-  grid-template-columns: 2fr 1fr;
-  grid-template-rows: 1fr 1fr;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: minmax(0, 1fr) minmax(180px, 28vh);
   gap: 1rem;
   padding: 1rem;
   height: calc(100vh - 64px);
 }
-#chain-section  { grid-row: 1 / span 2; }
-#candles-section, #signals-section { display: flex; flex-direction: column; }
+#chain-section  { grid-column: 1 / -1; grid-row: 1; min-width: 0; }
+#candles-section { grid-column: 1; grid-row: 2; display: flex; flex-direction: column; }
+#signals-section { grid-column: 2; grid-row: 2; display: flex; flex-direction: column; }
+@media (max-width: 900px) {
+  /* Tight viewport: stack everything. */
+  main, main#view-live {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto auto;
+  }
+  #chain-section  { grid-column: 1; grid-row: 1; }
+  #candles-section { grid-column: 1; grid-row: 2; }
+  #signals-section { grid-column: 1; grid-row: 3; }
+}
 
 section {
   background: var(--panel);
@@ -142,11 +157,25 @@ section h2 { font-size: 0.9rem; letter-spacing: 0.06em;
   border-radius: 4px; padding: 0.3rem 0.8rem; cursor: pointer;
 }
 
-#chain-section { overflow-x: auto; }
-table#chain { width: max-content; min-width: 100%; border-collapse: collapse;
-  font-family: var(--mono); font-size: 0.75rem; white-space: nowrap; }
+#chain-section { overflow-x: auto; width: 100%; }
+table#chain {
+  /* Always fill the container — `table-layout: fixed` divides the width
+     across every visible column so there's no dead space on ultrawides,
+     even when individual cells hold short placeholders ("—"). */
+  width: 100%;
+  min-width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 1.1rem;
+}
 table#chain th, table#chain td {
-  padding: 0.22rem 0.4rem; border-bottom: 1px solid var(--border); text-align: right;
+  padding: 0.5rem 0.45rem;
+  border-bottom: 1px solid var(--border);
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;      /* graceful truncate if a cell still gets tight */
 }
 table#chain td.num { font-variant-numeric: tabular-nums; }
 table#chain thead th { color: var(--muted); font-weight: 500; position: sticky; top: 0;
@@ -159,8 +188,26 @@ table#chain td.strike { font-weight: 700; color: var(--accent); text-align: cent
 table#chain tr.atm { background: #1f6feb18; }
 table#chain tr.atm td.strike { background: #1f6feb33; }
 
+/* Responsive column hiding — when the viewport can't fit every column at
+   a legible size, collapse the lowest-signal ones rather than shrinking
+   everything. `.hide-md` / `.hide-sm` live on both the thead th and tbody
+   td at the same ordinal, so columns drop cleanly without misalignment. */
+@media (min-width: 2200px) {
+  /* 29"+ ultrawide — plenty of room to read. */
+  table#chain { font-size: 1.2rem; }
+  table#chain th, table#chain td { padding: 0.6rem 0.55rem; }
+}
+@media (max-width: 1600px) {
+  table#chain { font-size: 0.8rem; }
+  table#chain th, table#chain td { padding: 0.28rem 0.3rem; }
+  table#chain .hide-md { display: none; }
+}
+@media (max-width: 1200px) {
+  table#chain .hide-sm { display: none; }
+}
+
 /* quote size annotation inside a bid/ask cell */
-table#chain td .q { color: var(--muted); font-size: 0.68rem; margin-left: 0.15rem; }
+table#chain td .q { color: var(--muted); font-size: 0.88rem; margin-left: 0.22rem; }
 
 /* change direction */
 table#chain td.pos { color: var(--green); }
@@ -176,8 +223,8 @@ table#chain td.ltp.mom-down { color: var(--red); }
 table#chain td.strike .badges { display: flex; gap: 3px; justify-content: center;
   margin-top: 2px; }
 .badge {
-  font-size: 0.6rem;
-  padding: 1px 4px;
+  font-size: 0.7rem;
+  padding: 2px 5px;
   border-radius: 3px;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -186,6 +233,58 @@ table#chain td.strike .badges { display: flex; gap: 3px; justify-content: center
 .badge.liq      { background: #f8514933; color: var(--red); }
 .badge.imb-up   { background: #3fb95033; color: var(--green); }
 .badge.imb-down { background: #f8514933; color: var(--red); }
+
+/* ---- Candles card ---- */
+
+#candles-section { min-height: 0; }
+.candle-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; }
+.candle-head h2 { margin: 0; flex: 0 0 auto; }
+.candle-head #tf-select {
+  background: #0b1220; color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 0.22rem 0.5rem; font: inherit; font-family: var(--mono);
+  font-size: 0.82rem;
+}
+.candle-head #candles-max {
+  margin-left: auto;
+  background: transparent; color: var(--muted);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 0.2rem 0.55rem; cursor: pointer; font-size: 0.95rem;
+}
+.candle-head #candles-max:hover { border-color: var(--accent); color: var(--accent); }
+
+#candle-chart {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 180px;
+}
+
+/* Maximize: full-viewport overlay. Use explicit top/left + 100vw/100vh in
+   addition to `inset: 0` so older engines and any CSS-containment quirk
+   still render correctly. The chart canvas is resized by JS on toggle
+   (via chart.resize) — this CSS just makes the overlay. */
+#candles-section.maximized {
+  position: fixed !important;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 1000;
+  margin: 0;
+  border-radius: 0;
+  padding: 1rem 1.25rem;
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+}
+#candles-section.maximized #candle-chart {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+}
 
 .feed { list-style: none; padding: 0; margin: 0; font-family: var(--mono); font-size: 0.82rem; }
 .feed li { padding: 0.25rem 0.5rem; border-bottom: 1px dashed var(--border); }

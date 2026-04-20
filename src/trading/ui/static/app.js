@@ -14,6 +14,12 @@
     ws: null,
     reconnectTimer: null,
     expiry: null,
+    // Candle chart (TradingView Lightweight Charts)
+    chart: null,
+    candleSeries: null,
+    candleTf: "1m",         // active timeframe
+    lastCandleT: 0,         // guard against out-of-order WS updates
+    candleResizeObs: null,
     chain: {},   // { strike: { CE: {tick, greeks}, PE: {tick, greeks} } }
     atm: null,
     metricsTimer: null,
@@ -42,12 +48,25 @@
       state.expiries = {};
     }
     renderTabs();
+    initCandleChart();
     $("load-chain").addEventListener("click", loadChain);
     $("replay-refresh").addEventListener("click", loadReplayList);
     $("mode-live").addEventListener("click", () => setMode("live"));
     $("mode-replay").addEventListener("click", () => setMode("replay"));
     $("replay-picker").addEventListener("change", (e) => onReplayRunSelect(e.target.value));
     $("replay-banner-clear").addEventListener("click", () => setMode("live"));
+    $("tf-select").addEventListener("change", (e) => {
+      state.candleTf = e.target.value;
+      if (state.current && state.indices.includes(state.current)) {
+        loadCandles(state.current, state.candleTf);
+      }
+    });
+    $("candles-max").addEventListener("click", toggleMaximizeCandles);
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && $("candles-section").classList.contains("maximized")) {
+        toggleMaximizeCandles();
+      }
+    });
     window.addEventListener("popstate", () => applyUrlState());
     await applyUrlState({ first: true });
   }
@@ -174,7 +193,8 @@
       // Index tab
       state.chain = {};
       $("chain-tbody").innerHTML = "";
-      $("candles").innerHTML = "";
+      if (state.candleSeries) state.candleSeries.setData([]);
+      state.lastCandleT = 0;
       $("signals").innerHTML = "";
       $("spot").textContent = "—";
       $("last-seen").textContent = "—";
@@ -187,6 +207,7 @@
       // live
       await fetchState(key);
       await loadChain();
+      await loadCandles(key, state.candleTf);
       connectWs(key);
     } finally {
       if (!opts.skipUrl) writeUrlState();
@@ -326,14 +347,113 @@
   }
 
   function onCandle(channel, candle) {
+    // Only update the chart when the WS channel matches the active TF — the
+    // server publishes all three concurrently. Candlestick `time` is unix
+    // seconds in IST so bars align with the broker's clock.
     const tf = channel.split(".").pop();
-    if (tf !== "1m") return;
-    const ts = candle.close_ts ? fmtTime(candle.close_ts) : "";
-    const li = document.createElement("li");
-    li.textContent = `${ts}  O${candle.open}  H${candle.high}  L${candle.low}  C${candle.close}  (${candle.tick_count})`;
-    $("candles").prepend(li);
-    const MAX = 40;
-    while ($("candles").children.length > MAX) $("candles").lastElementChild.remove();
+    if (tf !== state.candleTf) return;
+    if (!state.candleSeries || !candle || !candle.open_ts) return;
+    const t = Math.floor(candle.open_ts / 1000);
+    if (t < state.lastCandleT) return;    // ignore out-of-order
+    state.lastCandleT = t;
+    state.candleSeries.update({
+      time: t,
+      open: candle.open, high: candle.high,
+      low: candle.low,  close: candle.close,
+    });
+  }
+
+  // ---------- Candlestick chart (Lightweight Charts) ----------
+
+  function initCandleChart() {
+    const el = $("candle-chart");
+    if (!el || !window.LightweightCharts) return;
+
+    const chart = window.LightweightCharts.createChart(el, {
+      layout: {
+        background: { type: "solid", color: "#161b22" },
+        textColor: "#d1d5db",
+      },
+      grid: {
+        vertLines: { color: "#1f2937" },
+        horzLines: { color: "#1f2937" },
+      },
+      rightPriceScale: { borderColor: "#30363d" },
+      timeScale: {
+        borderColor: "#30363d",
+        timeVisible: true,
+        secondsVisible: false,
+      },
+      crosshair: { mode: 0 },
+      autoSize: false,
+    });
+    const series = chart.addCandlestickSeries({
+      upColor: "#3fb950", downColor: "#f85149",
+      borderUpColor: "#3fb950", borderDownColor: "#f85149",
+      wickUpColor: "#3fb950", wickDownColor: "#f85149",
+    });
+    chart.applyOptions({
+      width: el.clientWidth,
+      height: el.clientHeight || 200,
+    });
+    state.chart = chart;
+    state.candleSeries = series;
+
+    // Keep the chart sized to its container — responds to maximize/restore
+    // and to the viewport resizing. Coalesce into rAF so a flurry of resize
+    // events doesn't thrash the canvas.
+    let scheduled = false;
+    const resize = () => {
+      if (scheduled) return;
+      scheduled = true;
+      requestAnimationFrame(() => {
+        scheduled = false;
+        if (!state.chart) return;
+        state.chart.resize(el.clientWidth, el.clientHeight);
+      });
+    };
+    state.candleResizeObs = new ResizeObserver(resize);
+    state.candleResizeObs.observe(el);
+  }
+
+  async function loadCandles(idx, tf) {
+    if (!state.candleSeries) return;
+    try {
+      const res = await fetch(
+        `/api/candles/${idx}?timeframe=${encodeURIComponent(tf)}&limit=300`,
+      );
+      if (!res.ok) return;
+      const rows = await res.json();
+      const data = rows
+        .map((c) => ({
+          time: Math.floor(new Date(c.open_ts).getTime() / 1000),
+          open: c.open, high: c.high, low: c.low, close: c.close,
+        }))
+        .filter((d) => Number.isFinite(d.time));
+      state.candleSeries.setData(data);
+      state.lastCandleT = data.length ? data[data.length - 1].time : 0;
+      if (state.chart) state.chart.timeScale().fitContent();
+    } catch (e) { /* server may be cold */ }
+  }
+
+  function toggleMaximizeCandles() {
+    const sec = $("candles-section");
+    const btn = $("candles-max");
+    const nowMax = sec.classList.toggle("maximized");
+    if (btn) {
+      btn.textContent = nowMax ? "✕" : "⤢";
+      btn.title = nowMax ? "Restore" : "Maximize";
+    }
+    // Let layout settle before reading the new container size, then push
+    // the dimensions into Lightweight Charts so the canvas fills the new
+    // viewport. ResizeObserver covers incidental resizes later.
+    requestAnimationFrame(() => {
+      const el = $("candle-chart");
+      if (state.chart && el) {
+        state.chart.resize(el.clientWidth, el.clientHeight);
+        state.chart.timeScale().fitContent();
+      }
+    });
   }
 
   function onSignal(sig) {
@@ -449,6 +569,18 @@
     return `<td class="num">${(p * 100).toFixed(1)}</td>`;
   }
 
+  function itmCellClass(p, extra) {
+    const txt = Number.isFinite(p) ? (p * 100).toFixed(1) : "—";
+    return `<td class="num ${extra}">${txt}</td>`;
+  }
+
+  function chgCellClass(v, pct, extra) {
+    if (!Number.isFinite(v)) return `<td class="num ${extra}">—</td>`;
+    const cls = v > 0 ? "pos" : (v < 0 ? "neg" : "");
+    const txt = pct ? fmtPct(v) : (v >= 0 ? "+" : "") + v.toFixed(2);
+    return `<td class="num ${cls} ${extra}">${txt}</td>`;
+  }
+
   function renderChain() {
     const tbody = $("chain-tbody");
     const strikes = Object.keys(state.chain).map(Number).sort((a, b) => a - b);
@@ -462,22 +594,28 @@
       const isAtm = state.atm && Math.abs(s - state.atm) < 1;
       const trCls = ["row", isAtm ? "atm" : ""].filter(Boolean).join(" ");
 
+      const ceVoiTxt = Number.isFinite(ceM.vol_oi) ? ceM.vol_oi.toFixed(2) : "—";
+      const peVoiTxt = Number.isFinite(peM.vol_oi) ? peM.vol_oi.toFixed(2) : "—";
+      const ceTvTxt  = Number.isFinite(ceM.time_value) ? ceM.time_value.toFixed(2) : "—";
+      const peTvTxt  = Number.isFinite(peM.time_value) ? peM.time_value.toFixed(2) : "—";
+      // NB: hide-md / hide-sm classes must mirror the <th> layout in index.html
+      // so column collapse under @media queries keeps rows aligned.
       return `<tr class="${trCls}">
         <td class="num">${fmtQty(ceT.oi)}</td>
-        <td class="num">${fmtQty(ceT.oi_change)}</td>
+        <td class="num hide-sm">${fmtQty(ceT.oi_change)}</td>
         <td class="num">${fmtQty(ceT.volume)}</td>
-        <td class="num">${Number.isFinite(ceM.vol_oi) ? ceM.vol_oi.toFixed(2) : "—"}</td>
+        <td class="num hide-sm">${ceVoiTxt}</td>
         <td class="num">${fmt(ceG.iv ?? ceT.iv, 3)}</td>
         <td class="num">${fmt(ceG.delta, 3)}</td>
-        <td class="num">${fmt(ceG.gamma, 5)}</td>
-        <td class="num">${fmt(ceG.theta, 2)}</td>
-        <td class="num">${fmt(ceG.vega, 3)}</td>
-        ${itmCell(ceM.itm_prob)}
-        <td class="num">${Number.isFinite(ceM.time_value) ? ceM.time_value.toFixed(2) : "—"}</td>
+        <td class="num hide-md">${fmt(ceG.gamma, 5)}</td>
+        <td class="num hide-sm">${fmt(ceG.theta, 2)}</td>
+        <td class="num hide-sm">${fmt(ceG.vega, 3)}</td>
+        ${itmCellClass(ceM.itm_prob, "hide-md")}
+        <td class="num hide-md">${ceTvTxt}</td>
         ${spreadCell(ceM.spread_pct)}
         ${bidAskCell(ceT.bid, ceT.bid_qty)}
         ${ltpCell(s, "CE", ceT.ltp, ceMom)}
-        ${chgCell(ceT.change)}
+        ${chgCellClass(ceT.change, false, "hide-sm")}
         ${chgCell(ceT.change_pct, true)}
         ${bidAskCell(ceT.ask, ceT.ask_qty)}
 
@@ -485,20 +623,20 @@
 
         ${bidAskCell(peT.bid, peT.bid_qty)}
         ${ltpCell(s, "PE", peT.ltp, peMom)}
-        ${chgCell(peT.change)}
+        ${chgCellClass(peT.change, false, "hide-sm")}
         ${chgCell(peT.change_pct, true)}
         ${bidAskCell(peT.ask, peT.ask_qty)}
         ${spreadCell(peM.spread_pct)}
-        <td class="num">${Number.isFinite(peM.time_value) ? peM.time_value.toFixed(2) : "—"}</td>
-        ${itmCell(peM.itm_prob)}
-        <td class="num">${fmt(peG.vega, 3)}</td>
-        <td class="num">${fmt(peG.theta, 2)}</td>
-        <td class="num">${fmt(peG.gamma, 5)}</td>
+        <td class="num hide-md">${peTvTxt}</td>
+        ${itmCellClass(peM.itm_prob, "hide-md")}
+        <td class="num hide-sm">${fmt(peG.vega, 3)}</td>
+        <td class="num hide-sm">${fmt(peG.theta, 2)}</td>
+        <td class="num hide-md">${fmt(peG.gamma, 5)}</td>
         <td class="num">${fmt(peG.delta, 3)}</td>
         <td class="num">${fmt(peG.iv ?? peT.iv, 3)}</td>
-        <td class="num">${Number.isFinite(peM.vol_oi) ? peM.vol_oi.toFixed(2) : "—"}</td>
+        <td class="num hide-sm">${peVoiTxt}</td>
         <td class="num">${fmtQty(peT.volume)}</td>
-        <td class="num">${fmtQty(peT.oi_change)}</td>
+        <td class="num hide-sm">${fmtQty(peT.oi_change)}</td>
         <td class="num">${fmtQty(peT.oi)}</td>
       </tr>`;
     });

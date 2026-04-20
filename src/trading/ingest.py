@@ -198,6 +198,15 @@ class Orchestrator:
         self._subscribed: list[str] = []
         self._connected_once = False
 
+        # OI must come from REST — Fyers v3 WS strips OI from option scrips
+        # and omits it from depth frames. The poller overlays OI onto the
+        # same Redis chain entries as the WS tick path.
+        from trading.oi_poller import OIPoller
+        self.oi_poller = OIPoller(
+            get_chains=self._oi_chains_to_poll,
+            bus=self.bus,
+        )
+
     def _latest_tick_ms(self) -> int | None:
         seen: list[int] = []
         for idx in self.indices:
@@ -205,6 +214,20 @@ class Orchestrator:
             if v is not None:
                 seen.append(v)
         return max(seen) if seen else None
+
+    def _oi_chains_to_poll(self) -> list[tuple[str, str, date]]:
+        """Return [(fyers_index_sym, canonical_index, expiry_date), ...] for
+        every index that has a configured expiry — input for the OI poller."""
+        out: list[tuple[str, str, date]] = []
+        for idx in self.indices:
+            exp = self.expiries.get(idx)
+            if exp is None:
+                continue
+            sym = FYERS_INDEX_SYMBOL.get(idx)
+            if not sym:
+                continue
+            out.append((sym, idx, exp))
+        return out
 
     def _desired_symbols(self) -> list[str]:
         syms = list(build_index_subscription(self.indices))
@@ -340,8 +363,11 @@ class Orchestrator:
                     return
                 self.gaps.observe(sym, tick.ts_exchange)
                 metrics.observe_tick(tick.ts_exchange, tick.ts_received)
-                self.store.set_option_tick(tick)
-                self.bus.publish(ch_option_tick(tick.index), tick.model_dump(mode="json"))
+                # Publish the stored payload, which has the REST-sourced OI
+                # merged in, so WS clients don't see a 0 and clobber their
+                # last-known OI on every incoming tick.
+                stored = self.store.set_option_tick(tick)
+                self.bus.publish(ch_option_tick(tick.index), stored)
                 self.opt_buffer.add(tick)
         except Exception as e:  # noqa: BLE001
             log.error("on_message_failed", error=str(e))
@@ -369,6 +395,7 @@ class Orchestrator:
         log.info("ingest_start", indices=self.indices)
         self.freeze.start()
         self.metrics_pub.start()
+        self.oi_poller.start()
         backoff = 1
         while not self._stop.is_set():
             if self._connected_once:
@@ -414,6 +441,7 @@ class Orchestrator:
             self.idx_buffer.flush()
             self.opt_buffer.flush()
         finally:
+            self.oi_poller.stop()
             self.metrics_pub.stop()
             self.freeze.stop()
             shutdown_writer()

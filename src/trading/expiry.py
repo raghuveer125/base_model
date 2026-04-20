@@ -64,34 +64,53 @@ def _fetch_master(exchange: str) -> list[list[str]]:
     return list(reader)
 
 
+# An actively traded weekly / monthly chain has many strikes (NIFTY weekly has
+# ~80+, monthly ~150+). Ghost entries — expiries Fyers lists but that don't
+# actually trade (e.g. post-SEBI-discontinuation BANKNIFTY weeklies) — usually
+# have a handful at most. Require at least this many to count the expiry as
+# "real". Filters out the false-nearest pick that was causing BANKNIFTY to
+# subscribe to a dead 2026-04-28 chain.
+_MIN_STRIKES_FOR_REAL_EXPIRY = 20
+
+
 def _nearest_expiry_from_master(
     rows: list[list[str]], option_root: str, today: date,
 ) -> date | None:
-    """Find the nearest expiry >= today for the given option root."""
-    candidates: set[date] = set()
+    """Find the nearest expiry >= today for the given option root that has
+    enough strikes to look like a genuinely-traded chain."""
+    # Count strikes per expiry so we can reject ghosts.
+    counts: dict[date, int] = {}
     for row in rows:
         if len(row) < _MIN_COLS:
             continue
-        # Filter: only options (CE/PE), not futures (XX)
         opt_type = row[_COL_OPTION_TYPE].strip()
         if opt_type not in ("CE", "PE"):
             continue
-        # Match the underlying root name exactly
         root = row[_COL_ROOT].strip().upper()
         if root != option_root:
             continue
-        # Parse expiry epoch
         try:
             epoch = int(row[_COL_EXPIRY_EPOCH].strip())
             exp_date = datetime.fromtimestamp(epoch, tz=timezone.utc).date()
         except (ValueError, OSError):
             continue
         if exp_date >= today:
-            candidates.add(exp_date)
+            counts[exp_date] = counts.get(exp_date, 0) + 1
 
-    if not candidates:
+    if not counts:
         return None
-    return min(candidates)
+
+    real = [d for d, n in counts.items() if n >= _MIN_STRIKES_FOR_REAL_EXPIRY]
+    if real:
+        return min(real)
+    # Absolute fallback — nothing crossed the threshold. Return nearest so we
+    # at least try, rather than failing hard. Logged so anomalies are visible.
+    log.warning(
+        "no_dense_expiry_found",
+        root=option_root,
+        counts={d.isoformat(): n for d, n in sorted(counts.items())[:5]},
+    )
+    return min(counts)
 
 
 def fetch_expiry(index: str, today: date | None = None) -> date:
