@@ -90,12 +90,23 @@ def test_exit_time_stop_fires_after_deadline():
     assert d.should_exit and d.reason == "time"
 
 def test_exit_regime_flip_closes_call_on_short_regime():
-    d = evaluate_exit(_pos(), ltp=105.0, now_ms=10,
+    # Soft exits require age >= 5s AND ltp < entry — both hold here.
+    d = evaluate_exit(_pos(entry=110.0), ltp=99.0, now_ms=6_000,
                        regime_bias="short")
     assert d.should_exit and d.reason == "regime_flip"
 
+def test_exit_regime_flip_blocked_if_position_too_young():
+    d = evaluate_exit(_pos(entry=110.0), ltp=99.0, now_ms=1_000,
+                       regime_bias="short")
+    assert not d.should_exit     # age < 5s
+
+def test_exit_regime_flip_blocked_if_not_adverse():
+    d = evaluate_exit(_pos(entry=100.0), ltp=105.0, now_ms=6_000,
+                       regime_bias="short")
+    assert not d.should_exit     # in profit; soft exits skip
+
 def test_exit_wall_break_closes_call_on_support_break():
-    d = evaluate_exit(_pos(), ltp=105.0, now_ms=10,
+    d = evaluate_exit(_pos(entry=110.0), ltp=99.0, now_ms=6_000,
                        regime_bias="long",
                        spot=24_700, primary_support=24_800)
     assert d.should_exit and d.reason == "wall_break"

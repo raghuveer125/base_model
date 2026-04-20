@@ -68,6 +68,7 @@
       }
     });
     window.addEventListener("popstate", () => applyUrlState());
+    startPaperPolling();
     await applyUrlState({ first: true });
   }
 
@@ -302,6 +303,8 @@
       else if (channel.startsWith("candles.")) onCandle(channel, data);
       else if (channel.startsWith("greeks.")) onGreeks(data);
       else if (channel.startsWith("signals.")) onSignal(data);
+      else if (channel.startsWith("scalp.")) onScalpEvent(channel, data);
+      else if (channel.startsWith("critical.regime.")) onRegimeEvent(channel, data);
     };
   }
 
@@ -464,6 +467,88 @@
     $("signals").prepend(li);
     const MAX = 40;
     while ($("signals").children.length > MAX) $("signals").lastElementChild.remove();
+  }
+
+  // ---------- paper-trading feed from trading.critical ----------
+
+  // `scalp.{INDEX}` events come from trading.critical.executor — entry /
+  // exit / entry_rejected. Render compact coloured lines in the signals
+  // feed so the live chain view shows the paper book's activity.
+  function onScalpEvent(channel, ev) {
+    if (!ev || typeof ev !== "object") return;
+    const idx = channel.split(".", 2)[1] || "";
+    const li = document.createElement("li");
+    const t = ev.ts ? fmtTime(ev.ts) : "";
+    const side = ev.side || "";
+    const strike = ev.strike ?? "";
+    const kind = ev.kind || "event";
+    if (kind === "entry") {
+      li.className = "sig entry BUY";
+      li.textContent =
+        `${t}  ENTRY  ${idx} ${strike}${side}  @${(ev.entry_ltp ?? 0).toFixed(2)}  ` +
+        `stop=${(ev.stop ?? 0).toFixed(2)} target=${(ev.target ?? 0).toFixed(2)}  ` +
+        `(c=${(ev.confidence ?? 0).toFixed(2)})  ${(ev.reasons || []).join(" · ")}`;
+    } else if (kind === "exit") {
+      const pnl = Number(ev.pnl ?? 0);
+      li.className = `sig exit ${pnl >= 0 ? "win" : "loss"}`;
+      const held = Math.round((ev.held_ms ?? 0) / 1000);
+      li.textContent =
+        `${t}  EXIT   ${idx} ${strike}${side}  ${pnl >= 0 ? "+" : ""}₹${pnl.toFixed(2)}  ` +
+        `hold=${held}s  ${ev.reason ?? ""}`;
+    } else if (kind === "entry_rejected") {
+      li.className = "sig rejected";
+      li.textContent = `${t}  REJECT ${idx} ${strike}${side}  ${ev.reason ?? ""}`;
+    } else {
+      li.textContent = `${t}  ${kind.toUpperCase()} ${idx}`;
+    }
+    $("signals").prepend(li);
+    const MAX = 60;
+    while ($("signals").children.length > MAX) $("signals").lastElementChild.remove();
+  }
+
+  function onRegimeEvent(channel, data) {
+    // Lightweight: surface the regime only in the paper strip's tooltip.
+    if (!data || typeof data !== "object") return;
+    state.lastRegime ||= {};
+    const idx = channel.split(".").pop();
+    state.lastRegime[idx] = data;
+  }
+
+  // ---------- paper trading summary strip + poller ----------
+
+  let paperTimer = null;
+
+  function startPaperPolling() {
+    stopPaperPolling();
+    refreshPaper();
+    paperTimer = setInterval(refreshPaper, 5000);
+  }
+
+  function stopPaperPolling() {
+    if (paperTimer) { clearInterval(paperTimer); paperTimer = null; }
+  }
+
+  async function refreshPaper() {
+    const el = $("paper-strip");
+    if (!el) return;
+    try {
+      const r = await fetch("/api/critical/validation");
+      if (!r.ok) { el.textContent = "paper: offline"; return; }
+      const d = await r.json();
+      if (!d.available) { el.textContent = "paper: idle"; return; }
+      const o = d.overall || {};
+      const pnlNum = Number(o.total_pnl ?? 0);
+      const pnl = (pnlNum >= 0 ? "+" : "") + pnlNum.toFixed(0);
+      const hit = Math.round((o.hit_rate ?? 0) * 100);
+      el.innerHTML =
+        `paper · entries <b>${o.entries ?? 0}</b> · ` +
+        `W/L <b>${o.wins ?? 0}/${o.losses ?? 0}</b> · ` +
+        `hit <b>${hit}%</b> · ` +
+        `pnl <b class="${pnlNum >= 0 ? "pos" : "neg"}">₹${pnl}</b> · ` +
+        `up ${d.uptime_s ?? 0}s`;
+    } catch (e) {
+      el.textContent = "paper: err";
+    }
   }
 
   let renderPending = false;

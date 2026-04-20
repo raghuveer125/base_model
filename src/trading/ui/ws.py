@@ -21,12 +21,18 @@ router = APIRouter()
 
 
 def _patterns_for(index: str) -> list[str]:
+    # `scalp.*` and `critical.regime.*` are published by trading.critical
+    # when it's running. Base UI subscribes anyway — if the critical layer
+    # isn't up, Redis simply has nothing on those channels and the UI
+    # shows empty widgets. No hard dep on the critical package.
     return [
         f"ticks.index.{index}",
         f"ticks.option.{index}",
         f"candles.{index}.*",
         f"greeks.{index}",
         "signals.*",
+        f"scalp.{index}",
+        f"critical.regime.{index}",
     ]
 
 

@@ -63,6 +63,28 @@ def indices() -> list[str]:
     return get_settings().index_list
 
 
+@router.get("/critical/validation")
+def critical_validation() -> dict:
+    """Live paper-trading summary written by `trading.critical.validator`.
+
+    Returns the contents of `logs/critical/validation.json` or a minimal
+    "no-data" payload if the critical layer isn't running. The UI can
+    poll this safely regardless of whether the critical engine is up.
+    """
+    from pathlib import Path
+    path = Path("logs/critical/validation.json").resolve()
+    if not path.is_file():
+        return {"uptime_s": 0, "overall": {
+            "entries": 0, "closed": 0, "wins": 0, "losses": 0,
+            "hit_rate": 0.0, "total_pnl": 0.0}, "per_index": {},
+            "per_regime": {}, "available": False}
+    try:
+        return {**orjson.loads(path.read_bytes()), "available": True}
+    except Exception as e:  # noqa: BLE001
+        log.warning("critical_validation_read_failed", error=str(e))
+        return {"available": False, "error": str(e)}
+
+
 @router.get("/expiries")
 def expiries() -> dict[str, str]:
     """Nearest expiry per configured index, as ISO date strings.

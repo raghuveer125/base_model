@@ -293,6 +293,22 @@ table#chain td.strike .badges { display: flex; gap: 3px; justify-content: center
 .feed li.sig.HOLD { color: var(--muted); }
 .feed li.sig.EXIT { color: #f0b429; }
 
+/* scalp entries / exits from the critical paper-trading layer */
+.feed li.sig.entry    { color: var(--accent); font-weight: 600; }
+.feed li.sig.exit.win { color: var(--green); }
+.feed li.sig.exit.loss{ color: var(--red); }
+.feed li.sig.rejected { color: var(--muted); font-size: 0.78rem; }
+
+/* paper stats strip in the signals section head */
+.paper-strip {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+}
+.paper-strip b    { color: var(--accent); font-weight: 600; }
+.paper-strip .pos { color: var(--green); }
+.paper-strip .neg { color: var(--red); }
+
 /* ---- Metrics view ---- */
 
 .view[hidden] { display: none; }
