@@ -198,7 +198,7 @@ class Validator:
             entries=overall["entries"],
             hit_rate=overall["hit_rate"],
             total_pnl=overall["total_pnl"],
-            uptime_s=overall["uptime_s"],
+            uptime_s=payload["uptime_s"],
         )
 
     def _snapshot(self) -> dict:
