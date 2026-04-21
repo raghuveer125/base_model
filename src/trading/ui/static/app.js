@@ -628,8 +628,8 @@
         : "—";
       const hold = t.held_ms != null ? Math.round(t.held_ms / 1000) : "—";
       const when = t.exit_ts
-        ? fmtTime(t.exit_ts)
-        : (t.entry_ts ? fmtTime(t.entry_ts) + " (open)" : "");
+        ? fmtDateTime(t.exit_ts)
+        : (t.entry_ts ? fmtDateTime(t.entry_ts) + " (open)" : "");
       const reasons = (t.reasons || []).join(" · ");
       const entryLtp = t.entry_ltp != null ? Number(t.entry_ltp).toFixed(2) : "—";
       const exitLtp = t.exit_ltp != null ? Number(t.exit_ltp).toFixed(2) : "—";
@@ -851,6 +851,17 @@
     const n = +ms;
     if (!Number.isFinite(n)) return "—";
     return new Date(n).toLocaleTimeString([], { hour12: false });
+  }
+
+  function fmtDateTime(ms) {
+    const n = +ms;
+    if (!Number.isFinite(n)) return "—";
+    const d = new Date(n);
+    const date = d.toLocaleDateString([], {
+      year: "2-digit", month: "2-digit", day: "2-digit",
+    });
+    const time = d.toLocaleTimeString([], { hour12: false });
+    return `${date} ${time}`;
   }
 
   // ----- metrics view -----

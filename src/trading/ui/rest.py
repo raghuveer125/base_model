@@ -128,7 +128,7 @@ def critical_trades(limit: int = Query(100, ge=1, le=2000)) -> list[dict]:
             })
     # Any still-open positions
     for entry in open_by_key.values():
-        paired.append({"status": "open", **entry})
+        paired.append({"status": "open", "entry_ts": entry.get("ts"), **entry})
 
     paired.sort(key=lambda r: r.get("exit_ts") or r.get("ts") or r.get("entry_ts") or 0,
                  reverse=True)
