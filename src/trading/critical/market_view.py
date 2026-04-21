@@ -57,6 +57,11 @@ class MarketView:
     def get_spot(self, index: str) -> float | None:
         return self._store.get_spot(index)
 
+    def get_vix(self) -> float | None:
+        """Latest India VIX LTP (scalar volatility gauge), or None if the
+        ingest pipeline hasn't populated it yet."""
+        return self._store.get_vix()
+
     def get_chain_snapshot(
         self, index: str, expiry_iso: str,
     ) -> list[ChainRow]:

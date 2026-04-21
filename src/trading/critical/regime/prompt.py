@@ -45,10 +45,20 @@ Use that context to cool down or warm up your gate:
   confidence below 50 UNLESS an imbalance signal (imbalance > 0.8) in
   the snapshot clearly points to a directional move.
 
-- If VIX is provided and VIX < 12, assume the 300s time-stop is a trap
-  for any non-directional entry. Veto the entry window by setting
-  confidence < 50 and bias = "neutral" unless the price action is
-  strongly directional (trending with few flips in the recent candles).
+- India VIX is provided as a numeric value (or "not available" if the
+  ingest hasn't populated it yet). Use it to size your conviction:
+    * VIX < 12  → low-vol regime. Option premia decay fast; the 300s
+      time-stop becomes a trap for non-directional entries. Set bias =
+      "neutral" with confidence < 50 UNLESS the candles show a clean
+      directional run (trending with few flips).
+    * 12 ≤ VIX ≤ 18 → normal regime; judge on price action alone.
+    * VIX > 18 → elevated volatility. Widen your tolerance for colour
+      flips before declaring "volatile" — whippy price action is
+      expected and not the same as a structural volatility breakout.
+    * VIX > 22 → classify as "volatile" and set bias = "neutral"
+      regardless of candle pattern. The regime gate will veto entries.
+  If VIX is "not available", ignore these rules and classify on the
+  other inputs alone.
 
 - If the last 3 trades on this index all exited via the same reason
   ("time", "wall_break", or "stop"), treat that as evidence your own
@@ -95,6 +105,9 @@ class RegimeInput:
     total_put_oi_change: int
     highest_call_oi_strike: int | None
     highest_put_oi_strike: int | None
+    # India VIX spot — if None, the prompt renders "not available" and
+    # VIX-sensitive SYSTEM_PROMPT rules should not fire.
+    india_vix: float | None = None
     # Optional adaptive-memory block; when absent, SYSTEM_PROMPT's rules
     # say "behave normally" so this stays a pure additive extension.
     feedback: SessionFeedback | None = None
@@ -107,9 +120,15 @@ def build_user_prompt(snap: RegimeInput) -> str:
         for i, (o, h, l, c) in enumerate(snap.recent_candles)
     ) or "  (no candles)"
     ltps = ", ".join(f"{x:.2f}" for x in snap.recent_ltps) or "(empty)"
+    vix_line = (
+        f"India VIX: {snap.india_vix:.2f}"
+        if snap.india_vix is not None
+        else "India VIX: not available"
+    )
     feedback_block = _render_feedback(snap.feedback)
     return f"""Index: {snap.index}
 Spot: {snap.spot:.2f}
+{vix_line}
 Recent LTPs: [{ltps}]
 Recent 1m candles (oldest first):
 {candles}

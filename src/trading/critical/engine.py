@@ -494,6 +494,7 @@ class CriticalEngine:
             total_put_oi_change=total_put_chg,
             highest_call_oi_strike=hi_ce,
             highest_put_oi_strike=hi_pe,
+            india_vix=self.market.get_vix(),
             feedback=self._session_feedback(index),
         )
 

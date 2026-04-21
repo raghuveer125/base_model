@@ -14,6 +14,7 @@ from typing import Iterable
 from trading.logging_setup import get_logger
 from trading.schemas import (
     FYERS_INDEX_SYMBOL,
+    FYERS_VIX_SYMBOL,
     INDEX_OPTION_ROOT,
     INDEX_STRIKE_STEP,
     Index,
@@ -231,6 +232,12 @@ def _to_ms(ts: int | float | str) -> int:
 
 
 def build_index_subscription(indices: Iterable[str]) -> list[str]:
+    """Build the Fyers WS subscription list for the configured indices.
+
+    Always includes the India VIX symbol so the regime classifier has a
+    live volatility signal — VIX is a scalar, so it doesn't cost
+    chain / greeks / candle work downstream.
+    """
     out: list[str] = []
     for idx in indices:
         sym = FYERS_INDEX_SYMBOL.get(idx)
@@ -238,6 +245,7 @@ def build_index_subscription(indices: Iterable[str]) -> list[str]:
             out.append(sym)
         else:
             log.warning("no_symbol_for_index", index=idx)
+    out.append(FYERS_VIX_SYMBOL)
     return out
 
 

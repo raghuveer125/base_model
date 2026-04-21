@@ -48,6 +48,8 @@ class LiveStore:
     chain:{INDEX}:{EXPIRY}                           hash, field={STRIKE}:{TYPE}
     atm:{INDEX}                                      int
     spot:{INDEX}                                     float
+    vix                                              float (India VIX LTP)
+    vix_ts_ms                                        epoch ms of last VIX tick
     last_seen:{INDEX}                                epoch ms
     token:fyers                                      token JSON
     """
@@ -65,6 +67,24 @@ class LiveStore:
     def get_spot(self, index: str) -> float | None:
         raw = self.r.get(f"tpp:spot:{index}")
         return float(raw) if raw is not None else None
+
+    def set_vix(self, ltp: float, ts_ms: int | None = None) -> None:
+        """Store the latest India VIX scalar. Separate from index ticks
+        because VIX doesn't carry option chain / greeks / candle closers.
+        """
+        pipe = self.r.pipeline(transaction=False)
+        pipe.set("tpp:vix", float(ltp))
+        if ts_ms is not None:
+            pipe.set("tpp:vix_ts_ms", int(ts_ms))
+        pipe.execute()
+
+    def get_vix(self) -> float | None:
+        raw = self.r.get("tpp:vix")
+        return float(raw) if raw is not None else None
+
+    def vix_ts_ms(self) -> int | None:
+        raw = self.r.get("tpp:vix_ts_ms")
+        return int(raw) if raw is not None else None
 
     def last_seen_ms(self, index: str) -> int | None:
         raw = self.r.get(f"tpp:last_seen:{index}")

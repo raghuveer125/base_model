@@ -7,11 +7,13 @@ from datetime import date
 from trading.adapter import (
     align_strike,
     atm_strikes,
+    build_index_subscription,
     build_option_subscription,
     normalize_index_tick,
     normalize_option_tick,
     parse_option_symbol,
 )
+from trading.schemas import FYERS_VIX_SYMBOL
 
 
 def test_align_strike_rounds_to_step():
@@ -158,3 +160,21 @@ def test_build_option_subscription_weekly_uses_mcode_dd_format():
     assert len(syms) == 6
     # prefix should be NSE:NIFTY + 26 + 4 + 23
     assert all(s.startswith("NSE:NIFTY26423") for s in syms)
+
+
+# ----- build_index_subscription -----
+
+def test_build_index_subscription_emits_configured_indices_plus_vix():
+    syms = build_index_subscription(["NIFTY50", "BANKNIFTY", "SENSEX"])
+    assert "NSE:NIFTY50-INDEX" in syms
+    assert "NSE:NIFTYBANK-INDEX" in syms
+    assert "BSE:SENSEX-INDEX" in syms
+    assert FYERS_VIX_SYMBOL in syms
+    # VIX is last; one entry per managed index plus one VIX
+    assert len(syms) == 4
+
+def test_build_index_subscription_still_appends_vix_when_no_indices():
+    # Degenerate empty input — VIX should still be on the wire so the
+    # regime classifier isn't blind on a cold cache.
+    syms = build_index_subscription([])
+    assert syms == [FYERS_VIX_SYMBOL]

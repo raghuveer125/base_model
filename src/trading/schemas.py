@@ -27,6 +27,12 @@ FYERS_INDEX_SYMBOL: dict[str, str] = {
     Index.SENSEX.value: "BSE:SENSEX-INDEX",
 }
 
+# India VIX — not one of the indices we scalp, but a volatility signal
+# the regime classifier needs. Kept as a standalone symbol so the ingest
+# routes it to a dedicated Redis key (`tpp:vix`) without polluting the
+# index-tick pipeline (no candle closing, no greeks, no chain lookup).
+FYERS_VIX_SYMBOL: str = "NSE:INDIAVIX-INDEX"
+
 INDEX_EXCHANGE: dict[str, str] = {
     Index.NIFTY50.value: "NSE",
     Index.BANKNIFTY.value: "NSE",

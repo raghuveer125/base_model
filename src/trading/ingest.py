@@ -33,7 +33,7 @@ from trading.config import get_settings
 from trading.events import EventBus, ch_index_tick, ch_option_tick
 from trading.logging_setup import get_logger
 from trading.metrics import MetricsPublisher, metrics
-from trading.schemas import FYERS_INDEX_SYMBOL, now_ms
+from trading.schemas import FYERS_INDEX_SYMBOL, FYERS_VIX_SYMBOL, now_ms
 from trading.storage import LiveStore, insert_index_ticks, insert_option_ticks
 from trading.wal import get_writer, shutdown_writer
 
@@ -336,6 +336,14 @@ class Orchestrator:
             metrics.incr_wal_append()
             sym = payload.get("symbol") or payload.get("sym") or ""
 
+            if sym == FYERS_VIX_SYMBOL:
+                # India VIX is a scalar volatility gauge, not a scalpable
+                # index — skip candle / chain / publish pipeline and just
+                # cache the latest LTP for the regime classifier.
+                ltp = payload.get("ltp")
+                if isinstance(ltp, (int, float)) and ltp > 0:
+                    self.store.set_vix(float(ltp), ts_ms=now_ms())
+                return
             if sym in FYERS_INDEX_SYMBOL.values():
                 tick = normalize_index_tick(payload)
                 if tick is None:
