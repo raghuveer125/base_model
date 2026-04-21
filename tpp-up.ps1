@@ -41,6 +41,17 @@ function Write-Fail  ($msg)     { Write-Host "    FAIL: $msg" -ForegroundColor R
 # ── Track child processes for cleanup ──────────────────────────
 $script:Children = @()
 
+# Modules we manage. Keep in sync with Start-Service calls in step 6.
+$script:ManagedModules = @(
+    'trading.scripts.run_ingest',
+    'trading.scripts.run_candles',
+    'trading.scripts.run_greeks',
+    'trading.scripts.run_strategies',
+    'trading.scripts.run_orders',
+    'trading.critical',
+    'trading.scripts.run_ui'
+)
+
 function Stop-AllChildren {
     Write-Host ""
     Write-Host "Shutting down TPP services..." -ForegroundColor Yellow
@@ -53,6 +64,29 @@ function Stop-AllChildren {
         }
     }
     Write-Host "All services stopped." -ForegroundColor Green
+}
+
+# Kill any leftover python processes running our service modules. Prevents
+# port 8088 / websocket / pub-sub conflicts when a previous run left
+# orphans behind (crash, dangling tpp-up, manual kill of parent shell).
+function Stop-OrphanServices {
+    $killed = @()
+    foreach ($mod in $script:ManagedModules) {
+        $procs = Get-CimInstance Win32_Process -Filter "Name='python.exe'" `
+            -ErrorAction SilentlyContinue |
+            Where-Object { $_.CommandLine -like "*$mod*" }
+        foreach ($p in $procs) {
+            try {
+                Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+                $killed += "$mod (PID $($p.ProcessId))"
+            } catch {}
+        }
+    }
+    if ($killed.Count -gt 0) {
+        Write-Host "    Cleaned up $($killed.Count) orphan process(es):" -ForegroundColor Yellow
+        foreach ($k in $killed) { Write-Host "      - $k" -ForegroundColor Yellow }
+        Start-Sleep -Seconds 2   # give OS time to release ports/sockets
+    }
 }
 
 # Register cleanup on Ctrl+C
@@ -167,6 +201,10 @@ if ($SkipAuth) {
 Write-Host ""
 Write-Step 6 "Starting services (expiries auto-fetched from Fyers)"
 
+# Pre-clean: kill any orphaned service processes from prior runs so the
+# new set can bind ports / websocket / pub-sub channels cleanly.
+Stop-OrphanServices
+
 $venvPython = "$PSScriptRoot\.venv\Scripts\python.exe"
 
 function Start-Service ($name, $module, [string[]]$svcArgs) {
@@ -207,7 +245,15 @@ if (-not $SkipOrders) {
     Start-Service "orders" "trading.scripts.run_orders" @()
 }
 
-# 6f. UI
+# 6f. Critical paper-trading layer (scalp decisions + validator rollup)
+# Depends on ticks + candles + greeks being live. Subscribes via pub/sub;
+# no shared state with orders/strategies, so order is not critical.
+if (-not $SkipOrders) {
+    Start-Sleep -Seconds 1
+    Start-Service "critical" "trading.critical" @()
+}
+
+# 6g. UI
 if (-not $SkipUI) {
     Start-Sleep -Seconds 1
     Start-Service "ui" "trading.scripts.run_ui" @()
