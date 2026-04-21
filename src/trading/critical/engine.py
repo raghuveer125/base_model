@@ -486,6 +486,13 @@ class CriticalEngine:
         # Approximate "recent LTPs" with the last few candle closes — cheap
         # and deterministic.
         recent_ltps = tuple(float(c[3]) for c in recent[-5:])
+        # Per-index volatility gauges. ATM IV is drawn from THIS index's
+        # own option chain — never cross-mapped.
+        atm_iv_ce, atm_iv_pe = self._atm_iv(rows, float(spot))
+        # India VIX is authoritative for NIFTY50 only. For BANKNIFTY and
+        # SENSEX, pass None so the prompt doesn't render a NIFTY-derived
+        # number as if it were their volatility.
+        vix = self.market.get_vix() if index == "NIFTY50" else None
         return RegimeInput(
             index=index, spot=float(spot),
             recent_candles=recent, recent_ltps=recent_ltps,
@@ -494,9 +501,32 @@ class CriticalEngine:
             total_put_oi_change=total_put_chg,
             highest_call_oi_strike=hi_ce,
             highest_put_oi_strike=hi_pe,
-            india_vix=self.market.get_vix(),
+            india_vix=vix,
+            atm_iv_ce=atm_iv_ce,
+            atm_iv_pe=atm_iv_pe,
             feedback=self._session_feedback(index),
         )
+
+    @staticmethod
+    def _atm_iv(rows: list, spot: float) -> tuple[float | None, float | None]:
+        """Return (CE IV, PE IV) of the strike closest to spot, or (None,
+        None) if the chain is empty / greeks not computed yet. Purely
+        per-index — rows come from MarketView.get_chain_snapshot(index).
+        """
+        if not rows:
+            return None, None
+        atm = min(rows, key=lambda r: abs(r.strike - spot))
+        ce_iv = None
+        pe_iv = None
+        if atm.ce_greeks:
+            raw = atm.ce_greeks.get("iv")
+            if isinstance(raw, (int, float)) and raw > 0:
+                ce_iv = float(raw)
+        if atm.pe_greeks:
+            raw = atm.pe_greeks.get("iv")
+            if isinstance(raw, (int, float)) and raw > 0:
+                pe_iv = float(raw)
+        return ce_iv, pe_iv
 
     # ---- self-learning feedback ----
 
