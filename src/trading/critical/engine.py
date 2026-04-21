@@ -83,6 +83,13 @@ class CriticalEngine:
         # remember last-observed OI map per (index, side) for migration
         # detection between chain snapshots
         self._prev_oi: dict[tuple[str, str], dict[int, int]] = {}
+        # Batched gate-stage counters. `_try_entry` is called on every
+        # option tick (~10-50/s × 3 indices); incrementing Redis per
+        # stage per tick would be up to 600 writes/s. Instead, buffer
+        # locally and flush via pipeline every ~1s. Keys are
+        # `tpp:critical:gate_stats:{INDEX}:{stage}`.
+        self._gate_counts: dict[tuple[str, str], int] = {}
+        self._gate_last_flush_ms: int = 0
 
     # ---- lifecycle ----
 
@@ -210,13 +217,51 @@ class CriticalEngine:
         self._last_debug_ms = last
         log.info("critical_entry_skip", index=index, stage=stage, **kw)
 
+    # ---- gate-stage counters (batched) ----
+
+    _GATE_FLUSH_EVERY_MS: int = 1000
+
+    def _gate_tick(self, index: str, stage: str) -> None:
+        """Increment an in-memory counter for why `_try_entry` bailed
+        at `stage`. Batched flush to Redis every ~1s keeps write load
+        trivial even at 600 bailouts/sec peak."""
+        key = (index, stage)
+        self._gate_counts[key] = self._gate_counts.get(key, 0) + 1
+        now_ms_ = now_ms()
+        # First tick after startup just seeds the timer — don't flush
+        # a single-count write that breaks the batching contract.
+        if self._gate_last_flush_ms == 0:
+            self._gate_last_flush_ms = now_ms_
+            return
+        if now_ms_ - self._gate_last_flush_ms < self._GATE_FLUSH_EVERY_MS:
+            return
+        self._flush_gate_counts()
+        self._gate_last_flush_ms = now_ms_
+
+    def _flush_gate_counts(self) -> None:
+        if not self._gate_counts:
+            return
+        try:
+            # LiveStore exposes the raw client as `.r`.
+            pipe = self.market._store.r.pipeline(transaction=False)
+            for (idx, stage), n in self._gate_counts.items():
+                pipe.hincrby(f"tpp:critical:gate_stats:{idx}", stage, n)
+                pipe.expire(f"tpp:critical:gate_stats:{idx}", 86_400)
+            pipe.execute()
+        except Exception as e:   # noqa: BLE001 — stats are observability
+            log.warning("gate_stats_flush_failed", error=str(e))
+        finally:
+            self._gate_counts.clear()
+
     def _try_entry(self, index: str) -> None:
         expiry = self._expiries.get(index)
         if expiry is None:
             self._debug_entry(index, "no_expiry")
+            self._gate_tick(index, "no_expiry")
             return
         if index not in self.cfg.lots_per_index:
             self._debug_entry(index, "no_lots_config")
+            self._gate_tick(index, "no_lots_config")
             return
         gate = risk_gate(
             self.state, index, ts_ms=now_ms(),
@@ -228,10 +273,12 @@ class CriticalEngine:
         )
         if not gate.allowed:
             self._debug_entry(index, "risk_gate", reason=gate.reason)
+            self._gate_tick(index, f"risk_gate:{gate.reason}")
             return
 
         rows = self.market.get_chain_snapshot(index, expiry.isoformat())
         if not rows:
+            self._gate_tick(index, "no_rows")
             return
         walls = self.market.get_oi_walls(index, expiry.isoformat(), n=3)
         levels = compute_levels(walls)
@@ -239,6 +286,7 @@ class CriticalEngine:
         # ATM strike / closest-to-spot row — where we evaluate entries
         spot = self.market.get_spot(index)
         if spot is None:
+            self._gate_tick(index, "no_spot")
             return
         atm_row = min(rows, key=lambda r: abs(r.strike - spot))
         atm_ce = atm_row.ce_metrics or {}
@@ -309,11 +357,30 @@ class CriticalEngine:
             breaking_pe_walls=pe_migration.breaking,
         ))
 
-        # Consult regime, then aggregate
+        # Cheap pre-check BEFORE consulting the regime: does any side
+        # have enough agreeing signals at all? Using `regime_bias="neutral"`
+        # so nothing is vetoed at this stage — we only want to know if a
+        # candidate COULD exist. This saves a Claude API call on every
+        # tick where signals don't align (the dominant case in chop).
+        pre_check = combine_signals(
+            sigs, regime_bias="neutral",
+            min_agreement=self.cfg.min_agreement,
+        )
+        if pre_check is None:
+            self._gate_tick(index, "combine_none")
+            return
+
+        # Candidate exists — NOW it's worth asking Claude for the regime.
+        # (This is the only call path that consumes tokens; the cache
+        # layer still de-duplicates within a 15-min bucket.)
         regime = self._regime_for(index)
-        final = combine_signals(sigs, regime_bias=regime.bias,
-                                 min_agreement=self.cfg.min_agreement)
+        final = combine_signals(
+            sigs, regime_bias=regime.bias,
+            min_agreement=self.cfg.min_agreement,
+        )
         if final is None:
+            # Regime bias vetoed the only side that had agreement.
+            self._gate_tick(index, f"regime_vetoed_side:{pre_check.side}")
             return
         if not regime_allow(regime, final.side,
                              min_confidence=self.cfg.regime_min_confidence):
@@ -322,6 +389,10 @@ class CriticalEngine:
                      regime=regime.regime, bias=regime.bias,
                      confidence=regime.confidence,
                      min_required=self.cfg.regime_min_confidence)
+            self._gate_tick(
+                index,
+                f"regime_allow_block:{regime.regime}:{regime.bias}:conf{regime.confidence}",
+            )
             return
 
         # Pick an ITM contract in the configured delta window
@@ -332,6 +403,7 @@ class CriticalEngine:
             max_spread_pct=self.cfg.max_spread_pct,
         )
         if cand is None:
+            self._gate_tick(index, "pick_none")
             return
 
         lots = self.cfg.lots_per_index[index]
@@ -352,6 +424,9 @@ class CriticalEngine:
         )
         if outcome.ok and outcome.position is not None:
             idx_state.position = outcome.position
+            self._gate_tick(index, "entered")
+        else:
+            self._gate_tick(index, f"entry_rejected:{outcome.reason or 'unknown'}")
 
     # ---- exit evaluation ----
 

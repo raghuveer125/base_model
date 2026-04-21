@@ -135,6 +135,36 @@ def critical_trades(limit: int = Query(100, ge=1, le=2000)) -> list[dict]:
     return paired[:limit]
 
 
+@router.get("/critical/gate-stats")
+def critical_gate_stats() -> dict:
+    """Per-index gate-stage counters from `trading.critical.engine`.
+
+    Shows WHERE `_try_entry` bailed for each index since the last engine
+    restart. Helps answer "why aren't trades firing?" — the stage with
+    the highest count is the gate closing most often (e.g., dominant
+    `combine_none` = signals aren't aligning; dominant
+    `regime_allow_block` = Claude is vetoing).
+
+    Keys written batched every ~1s from the engine; TTL 24h so stale
+    data from a dead engine self-expires.
+    """
+    from trading.config import get_settings
+    from trading.storage import get_redis
+    r = get_redis()
+    out: dict[str, dict[str, int]] = {}
+    for idx in get_settings().index_list:
+        raw = r.hgetall(f"tpp:critical:gate_stats:{idx}")
+        if not raw:
+            out[idx] = {}
+            continue
+        out[idx] = {
+            (k.decode() if isinstance(k, bytes) else k):
+                int(v.decode() if isinstance(v, bytes) else v)
+            for k, v in raw.items()
+        }
+    return out
+
+
 @router.get("/critical/validation")
 def critical_validation() -> dict:
     """Live paper-trading summary written by `trading.critical.validator`.
