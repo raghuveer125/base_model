@@ -10,13 +10,14 @@
     5. Authenticates with Fyers (tpp-auth --manual)
     6. Launches all services in separate windows:
          ingest (auto-fetches expiries from Fyers) -> candles ->
-         greeks -> strategies -> orders -> ui
+         greeks -> strategies -> orders -> critical -> vigilante -> ui
     7. Ctrl+C in this window shuts everything down
 
 .EXAMPLE
     .\tpp-up.ps1
     .\tpp-up.ps1 -SkipAuth             # token still valid from earlier
-    .\tpp-up.ps1 -SkipOrders           # no paper trading
+    .\tpp-up.ps1 -SkipOrders           # no paper trading (also skips critical)
+    .\tpp-up.ps1 -SkipVigilante        # no sidecar monitor
     .\tpp-up.ps1 -SkipUI               # headless
     .\tpp-up.ps1 -AutoAuth             # TOTP auto-login instead of browser
 #>
@@ -25,6 +26,7 @@ param(
     [switch]$SkipAuth,
     [switch]$SkipOrders,
     [switch]$SkipUI,
+    [switch]$SkipVigilante,
     [switch]$AutoAuth,
     [switch]$SkipDocker
 )
@@ -49,6 +51,7 @@ $script:ManagedModules = @(
     'trading.scripts.run_strategies',
     'trading.scripts.run_orders',
     'trading.critical',
+    'trading.critical.vigilante',
     'trading.scripts.run_ui'
 )
 
@@ -253,7 +256,15 @@ if (-not $SkipOrders) {
     Start-Service "critical" "trading.critical" @()
 }
 
-# 6g. UI
+# 6g. Vigilante sidecar — PID collisions, heartbeat staleness, payload
+# verification. Pure read-only monitor; zero engine-side hooks. Safe to
+# toggle off with -SkipVigilante when you want a quiet stack.
+if (-not $SkipVigilante) {
+    Start-Sleep -Seconds 1
+    Start-Service "vigilante" "trading.critical.vigilante" @("daemon")
+}
+
+# 6h. UI
 if (-not $SkipUI) {
     Start-Sleep -Seconds 1
     Start-Service "ui" "trading.scripts.run_ui" @()
