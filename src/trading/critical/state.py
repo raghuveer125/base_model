@@ -68,6 +68,12 @@ class Position:
     stop_ltp: float
     time_stop_ms: int
     reason: str = ""
+    # Snapshot of the OI-derived S/R levels at entry time. Used by the
+    # wall-break exit to reject "false flag" exits that fire on the SAME
+    # wall that was already broken when the trade was opened. None means
+    # no wall was identified at that moment (fall back to old behaviour).
+    entry_primary_resistance: int | None = None
+    entry_primary_support: int | None = None
 
 
 @dataclass

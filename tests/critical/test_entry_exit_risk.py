@@ -149,6 +149,84 @@ def test_dollar_stop_does_not_fire_inside_cap():
     assert not d.should_exit
 
 
+# ----- wall-break hysteresis + same-wall skip -----
+
+def _pe_pos_with_entry_resistance(
+    entry_resistance: int | None, entry_ltp: float = 100.0,
+) -> Position:
+    return Position(
+        index="NIFTY50", expiry_iso="2026-04-28", strike=24_500,
+        option_type="PE", lots=1, lot_size=75,
+        entry_ltp=entry_ltp, entry_ts_ms=0,
+        target_ltp=entry_ltp + 10, stop_ltp=entry_ltp - 20,
+        time_stop_ms=1_000_000_000,
+        entry_primary_resistance=entry_resistance,
+    )
+
+def test_wall_break_skipped_when_same_wall_as_entry():
+    # PE opened when resistance was already 24500 (spot drifted to 24498
+    # then bounced to 24502 within the soft-exit-gate window). That wall
+    # was priced in at entry — don't panic-exit on it.
+    pos = _pe_pos_with_entry_resistance(24_500, entry_ltp=100.0)
+    d = evaluate_exit(pos, ltp=99.0, now_ms=10_000,
+                       regime_bias="neutral", spot=24_502,
+                       primary_resistance=24_500, primary_support=None,
+                       wall_break_hysteresis_pts=5.0)
+    assert not d.should_exit
+
+def test_wall_break_fires_on_new_wall():
+    # A freshly-migrated resistance that DIDN'T exist at entry. Spot
+    # clearly above it past the hysteresis buffer → exit.
+    pos = _pe_pos_with_entry_resistance(24_500, entry_ltp=100.0)
+    d = evaluate_exit(pos, ltp=99.0, now_ms=10_000,
+                       regime_bias="neutral", spot=24_556,
+                       primary_resistance=24_550, primary_support=None,
+                       wall_break_hysteresis_pts=5.0)
+    assert d.should_exit and d.reason == "wall_break"
+
+def test_wall_break_suppressed_by_hysteresis_flicker():
+    # Newly migrated wall at 24_550 but spot only barely above (24_552 —
+    # less than the 5-pt hysteresis). One-tick flicker, don't kill.
+    pos = _pe_pos_with_entry_resistance(24_500, entry_ltp=100.0)
+    d = evaluate_exit(pos, ltp=99.0, now_ms=10_000,
+                       regime_bias="neutral", spot=24_552,
+                       primary_resistance=24_550, primary_support=None,
+                       wall_break_hysteresis_pts=5.0)
+    assert not d.should_exit
+
+def test_wall_break_ce_symmetric_same_support():
+    # CE opened when support was 24_500; spot dips to 24_498 and recovers.
+    # Same-wall skip should apply to the support side just like resistance.
+    pos = Position(
+        index="NIFTY50", expiry_iso="2026-04-28", strike=24_500,
+        option_type="CE", lots=1, lot_size=75,
+        entry_ltp=100.0, entry_ts_ms=0,
+        target_ltp=110.0, stop_ltp=90.0, time_stop_ms=1_000_000_000,
+        entry_primary_support=24_500,
+    )
+    d = evaluate_exit(pos, ltp=99.0, now_ms=10_000,
+                       regime_bias="neutral", spot=24_498,
+                       primary_resistance=None, primary_support=24_500,
+                       wall_break_hysteresis_pts=5.0)
+    assert not d.should_exit
+
+def test_wall_break_legacy_behaviour_when_entry_wall_unset():
+    # Positions from before the entry-wall-tracking change have no
+    # entry_primary_resistance/support. Old behaviour must still work.
+    pos = Position(
+        index="NIFTY50", expiry_iso="2026-04-28", strike=24_500,
+        option_type="PE", lots=1, lot_size=75,
+        entry_ltp=100.0, entry_ts_ms=0,
+        target_ltp=110.0, stop_ltp=80.0, time_stop_ms=1_000_000_000,
+    )
+    # No hysteresis, no entry wall → behaves like pre-change code.
+    d = evaluate_exit(pos, ltp=99.0, now_ms=10_000,
+                       regime_bias="neutral", spot=24_555,
+                       primary_resistance=24_500, primary_support=None,
+                       wall_break_hysteresis_pts=0.0)
+    assert d.should_exit and d.reason == "wall_break"
+
+
 # ----- build_exit_levels -----
 
 def test_build_exit_levels_respects_rupee_cap():

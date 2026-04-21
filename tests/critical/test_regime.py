@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from trading.critical.regime import cache as cache_mod
 from trading.critical.regime.fallback import classify as fb_classify
-from trading.critical.regime.prompt import RegimeInput, build_user_prompt
+from trading.critical.regime.prompt import (
+    RegimeInput, SessionFeedback, build_user_prompt,
+)
 from trading.critical.regime.schema import RegimeDecision, allow_entry
 
 
@@ -82,6 +84,40 @@ def test_fallback_empty_candles_returns_low_confidence_ranging():
     out = fb_classify(_snap([]))
     assert out["regime"] == "ranging"
     assert out["confidence"] <= 30
+
+
+# ----- feedback injection -----
+
+def test_user_prompt_includes_no_trades_marker_when_empty_feedback():
+    snap = _snap([(100, 101, 99, 100)])
+    out = build_user_prompt(snap)
+    assert "(no trades yet today on this index)" in out
+
+def test_user_prompt_renders_feedback_stats():
+    fb = SessionFeedback(
+        dominant_exit_reason="time",
+        hit_rate=0.29,
+        trades_today=8,
+        last_3=(
+            "NIFTY50 24550PE exited via time -929",
+            "NIFTY50 24450CE exited via time -705",
+            "NIFTY50 24500CE exited via target +1672",
+        ),
+    )
+    snap = RegimeInput(
+        index="NIFTY50", spot=24_526.0,
+        recent_candles=((24524, 24528, 24515, 24524),),
+        recent_ltps=(24524.3,),
+        total_call_oi=0, total_put_oi=0,
+        total_call_oi_change=0, total_put_oi_change=0,
+        highest_call_oi_strike=None, highest_put_oi_strike=None,
+        feedback=fb,
+    )
+    out = build_user_prompt(snap)
+    assert "trades_today = 8" in out
+    assert "hit_rate = 29%" in out
+    assert "dominant_exit_reason = time" in out
+    assert "24550PE" in out
 
 
 # ----- cache determinism -----

@@ -50,6 +50,7 @@ def evaluate(
     primary_resistance: int | None = None,
     primary_support: int | None = None,
     max_loss_rupees: float | None = None,
+    wall_break_hysteresis_pts: float = 0.0,
 ) -> ExitDecision:
     age_ms = now_ms - pos.entry_ts_ms
     adverse = ltp < pos.entry_ltp
@@ -101,16 +102,32 @@ def evaluate(
     if pos.option_type == "PE" and regime_bias == "long":
         return ExitDecision(True, "regime_flip", "regime=long, held PE")
     # 5. wall break against position
+    #
+    # Two guards added vs v1:
+    #
+    #   a) same-wall skip: if the breaking wall is the SAME level that was
+    #      already identified at entry time, that break was already priced
+    #      in — exiting on it would be a tautological panic. Only exit when
+    #      a DIFFERENT (newly migrated) wall is broken.
+    #
+    #   b) hysteresis buffer: require the spot to be clear of the wall by
+    #      `wall_break_hysteresis_pts` points, so a 1-tick flicker past a
+    #      round-number level doesn't kill the position.
     if (spot is not None and pos.option_type == "CE" and primary_support
-            and spot < primary_support):
-        return ExitDecision(
-            True, "wall_break", f"spot={spot}<primary_support={primary_support}",
-        )
-    if (spot is not None and pos.option_type == "PE" and primary_resistance
-            and spot > primary_resistance):
+            and spot < primary_support - wall_break_hysteresis_pts
+            and primary_support != pos.entry_primary_support):
         return ExitDecision(
             True, "wall_break",
-            f"spot={spot}>primary_resistance={primary_resistance}",
+            f"spot={spot}<primary_support={primary_support}"
+            f" (hysteresis={wall_break_hysteresis_pts})",
+        )
+    if (spot is not None and pos.option_type == "PE" and primary_resistance
+            and spot > primary_resistance + wall_break_hysteresis_pts
+            and primary_resistance != pos.entry_primary_resistance):
+        return ExitDecision(
+            True, "wall_break",
+            f"spot={spot}>primary_resistance={primary_resistance}"
+            f" (hysteresis={wall_break_hysteresis_pts})",
         )
     return ExitDecision(False)
 

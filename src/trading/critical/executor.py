@@ -84,6 +84,8 @@ class ScalpExecutor:
         self, *, index: str, expiry_d: date, cand: EntryCandidate,
         signal: Signal, lots: int, target_ltp: float, stop_ltp: float,
         time_stop_ms: int, signal_ts_ms: int,
+        entry_primary_resistance: int | None = None,
+        entry_primary_support: int | None = None,
     ) -> ExecutionOutcome:
         lot_size = LOT_SIZES.get(index, 1)
         qty = max(lots * lot_size, 1)
@@ -120,6 +122,8 @@ class ScalpExecutor:
             stop_ltp=stop_ltp,
             time_stop_ms=time_stop_ms,
             reason=" | ".join(signal.reasons),
+            entry_primary_resistance=entry_primary_resistance,
+            entry_primary_support=entry_primary_support,
         )
         self._publish_event("entry", index, {
             "strike": pos.strike, "side": pos.option_type,

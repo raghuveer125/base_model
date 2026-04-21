@@ -42,7 +42,7 @@ from trading.critical.exit import build_exit_levels, evaluate as evaluate_exit
 from trading.critical.levels import compute_levels, detect_migration
 from trading.critical.market_view import MarketView
 from trading.critical.regime.client import RegimeClient
-from trading.critical.regime.prompt import RegimeInput
+from trading.critical.regime.prompt import RegimeInput, SessionFeedback
 from trading.critical.regime.schema import RegimeDecision, allow_entry as regime_allow
 from trading.critical.risk import allow_entry as risk_gate
 from trading.critical.state import CriticalState, Position
@@ -309,7 +309,8 @@ class CriticalEngine:
 
         # Consult regime, then aggregate
         regime = self._regime_for(index)
-        final = combine_signals(sigs, regime_bias=regime.bias, min_agreement=2)
+        final = combine_signals(sigs, regime_bias=regime.bias,
+                                 min_agreement=self.cfg.min_agreement)
         if final is None:
             return
         if not regime_allow(regime, final.side,
@@ -344,6 +345,8 @@ class CriticalEngine:
             index=index, expiry_d=expiry, cand=cand, signal=final,
             lots=lots, target_ltp=target, stop_ltp=stop,
             time_stop_ms=time_stop, signal_ts_ms=now_ms(),
+            entry_primary_resistance=levels.primary_resistance,
+            entry_primary_support=levels.primary_support,
         )
         if outcome.ok and outcome.position is not None:
             idx_state.position = outcome.position
@@ -379,6 +382,7 @@ class CriticalEngine:
             primary_resistance=levels.primary_resistance,
             primary_support=levels.primary_support,
             max_loss_rupees=self.cfg.max_loss_rupees,
+            wall_break_hysteresis_pts=self.cfg.wall_break_hysteresis_pts,
         )
         if not decision.should_exit:
             return
@@ -490,7 +494,70 @@ class CriticalEngine:
             total_put_oi_change=total_put_chg,
             highest_call_oi_strike=hi_ce,
             highest_put_oi_strike=hi_pe,
+            feedback=self._session_feedback(index),
         )
+
+    # ---- self-learning feedback ----
+
+    _TRADES_JSONL_PATH = "logs/critical/trades.jsonl"
+
+    def _session_feedback(self, index: str) -> SessionFeedback:
+        """Summarise today's closed trades on this index so Claude has
+        adaptive memory. Reads the same audit log the UI uses; silent
+        failure on any I/O issue (feedback is best-effort, not load-bearing)."""
+        try:
+            import orjson
+            from pathlib import Path
+            from datetime import datetime, timezone
+            path = Path(self._TRADES_JSONL_PATH).resolve()
+            if not path.is_file():
+                return SessionFeedback()
+            day_start_ms = int(datetime.combine(
+                datetime.now(timezone.utc).date(),
+                datetime.min.time(), tzinfo=timezone.utc,
+            ).timestamp() * 1000)
+            raw = path.read_bytes().splitlines()
+            entries: dict[tuple, dict] = {}
+            exits: list[dict] = []
+            for line in raw:
+                if not line:
+                    continue
+                try:
+                    ev = orjson.loads(line)
+                except Exception:   # noqa: BLE001
+                    continue
+                if ev.get("index") != index or int(ev.get("ts") or 0) < day_start_ms:
+                    continue
+                key = (ev.get("strike"), ev.get("side"))
+                if ev.get("kind") == "entry":
+                    entries[key] = ev
+                elif ev.get("kind") == "exit":
+                    entries.pop(key, None)
+                    exits.append(ev)
+            if not exits:
+                return SessionFeedback(trades_today=len(entries))
+            wins = sum(1 for e in exits if float(e.get("pnl") or 0) > 0)
+            hit = wins / len(exits)
+            reasons: dict[str, int] = {}
+            for e in exits:
+                tag = str(e.get("reason") or "unknown").split(":", 1)[0].strip()
+                reasons[tag] = reasons.get(tag, 0) + 1
+            dominant = max(reasons, key=reasons.get) if reasons else None
+            last_3 = tuple(
+                f"{index} {e.get('strike')}{e.get('side')} exited via "
+                f"{str(e.get('reason') or '').split(':', 1)[0].strip()} "
+                f"{float(e.get('pnl') or 0):+.0f}"
+                for e in exits[-3:]
+            )
+            return SessionFeedback(
+                dominant_exit_reason=dominant,
+                hit_rate=hit,
+                trades_today=len(exits) + len(entries),
+                last_3=last_3,
+            )
+        except Exception as e:   # noqa: BLE001
+            log.warning("session_feedback_failed", index=index, error=str(e))
+            return SessionFeedback()
 
 
 def install_signal_handlers(eng: CriticalEngine) -> None:

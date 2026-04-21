@@ -9,11 +9,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-SYSTEM_PROMPT = """You are a risk-neutral market-regime classifier for intraday Indian
-options scalping. On each call you receive a short snapshot of an index's
-recent price + open-interest behaviour and must decide whether the
-prevailing regime is trending, ranging, or volatile, and whether the
-short-term bias leans long, short, or neutral.
+SYSTEM_PROMPT = """You are a risk-neutral market-regime classifier AND adaptive
+co-pilot for intraday Indian options scalping. On each call you receive
+a short snapshot of an index's recent price + open-interest behaviour
+and must decide whether the prevailing regime is trending, ranging, or
+volatile, and whether the short-term bias leans long, short, or neutral.
 
 You are NOT an entry/exit signal. Do NOT recommend trades. Only classify.
 
@@ -32,7 +32,52 @@ Rules of thumb (guidance, not rigid):
   rising realized vol.
 
 A lower confidence is preferable to a confidently wrong regime. Err on
-the side of "ranging" when the picture is mixed."""
+the side of "ranging" when the picture is mixed.
+
+=== ADAPTIVE CO-PILOT FEEDBACK RULES ===
+You operate inside a system that reports how recent trades have closed.
+Use that context to cool down or warm up your gate:
+
+- If the recent feedback shows the dominant exit reason is TIME_STOP
+  (e.g. 5 of 7 trades timed out) AND hit-rate is below 35%, treat this
+  as evidence that the local signal engine is firing into non-moves.
+  When you classify the regime as RANGING in this state, you MUST set
+  confidence below 50 UNLESS an imbalance signal (imbalance > 0.8) in
+  the snapshot clearly points to a directional move.
+
+- If VIX is provided and VIX < 12, assume the 300s time-stop is a trap
+  for any non-directional entry. Veto the entry window by setting
+  confidence < 50 and bias = "neutral" unless the price action is
+  strongly directional (trending with few flips in the recent candles).
+
+- If the last 3 trades on this index all exited via the same reason
+  ("time", "wall_break", or "stop"), treat that as evidence your own
+  recent regime calls have been wrong. Consider the OPPOSITE bias or
+  return bias = "neutral" with lowered confidence.
+
+- If the feedback reports no recent trades, behave normally (use the
+  rules of thumb above without adaptive dampening).
+
+The block labelled "Recent session feedback" in the user message is
+your short-term memory. Treat it as authoritative about what already
+happened this session, but not predictive — your classification of the
+current snapshot is still the primary output."""
+
+
+@dataclass(frozen=True)
+class SessionFeedback:
+    """Short-term trade outcome memory injected into the user prompt.
+
+    Populated by the engine from the paper-trading audit log so Claude
+    can dampen / warm up its gate based on how recently-fired trades
+    actually closed. All fields optional — empty `last_3` means no
+    recent trades on this index today.
+    """
+    dominant_exit_reason: str | None = None
+    hit_rate: float | None = None       # 0..1
+    trades_today: int = 0
+    # Short one-line summaries: "NIFTY50 24550PE exited via time -929"
+    last_3: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -50,6 +95,9 @@ class RegimeInput:
     total_put_oi_change: int
     highest_call_oi_strike: int | None
     highest_put_oi_strike: int | None
+    # Optional adaptive-memory block; when absent, SYSTEM_PROMPT's rules
+    # say "behave normally" so this stays a pure additive extension.
+    feedback: SessionFeedback | None = None
 
 
 def build_user_prompt(snap: RegimeInput) -> str:
@@ -59,6 +107,7 @@ def build_user_prompt(snap: RegimeInput) -> str:
         for i, (o, h, l, c) in enumerate(snap.recent_candles)
     ) or "  (no candles)"
     ltps = ", ".join(f"{x:.2f}" for x in snap.recent_ltps) or "(empty)"
+    feedback_block = _render_feedback(snap.feedback)
     return f"""Index: {snap.index}
 Spot: {snap.spot:.2f}
 Recent LTPs: [{ltps}]
@@ -68,5 +117,24 @@ Total CE OI: {snap.total_call_oi}   (change: {snap.total_call_oi_change:+d})
 Total PE OI: {snap.total_put_oi}   (change: {snap.total_put_oi_change:+d})
 Highest CE-OI strike: {snap.highest_call_oi_strike}
 Highest PE-OI strike: {snap.highest_put_oi_strike}
-
+{feedback_block}
 Classify the regime. Respond with JSON only."""
+
+
+def _render_feedback(fb: SessionFeedback | None) -> str:
+    if fb is None or fb.trades_today == 0:
+        return "\nRecent session feedback: (no trades yet today on this index)\n"
+    hr_pct = f"{fb.hit_rate * 100:.0f}%" if fb.hit_rate is not None else "n/a"
+    lines = [
+        "",
+        "Recent session feedback:",
+        f"  trades_today = {fb.trades_today}",
+        f"  hit_rate = {hr_pct}",
+        f"  dominant_exit_reason = {fb.dominant_exit_reason or 'n/a'}",
+    ]
+    if fb.last_3:
+        lines.append("  last 3 trades:")
+        for s in fb.last_3:
+            lines.append(f"    - {s}")
+    lines.append("")
+    return "\n".join(lines)

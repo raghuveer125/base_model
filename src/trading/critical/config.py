@@ -100,10 +100,12 @@ class CriticalConfig:
     big_loss_rupees: float
     regime_interval_s: int
     regime_min_confidence: int
+    min_agreement: int
     time_stop_s: int
     no_trade_open_min: int
     no_trade_close_min: int
     max_spread_pct: float
+    wall_break_hysteresis_pts: float
     anthropic_model: str
     anthropic_api_key: str
 
@@ -125,10 +127,14 @@ def load_config() -> CriticalConfig:
         big_loss_rupees   = _get_float("CRITICAL_BIG_LOSS_RUPEES", 2000.0),
         regime_interval_s = _get_int  ("CRITICAL_REGIME_INTERVAL_S", 900),
         regime_min_confidence = _get_int("CRITICAL_REGIME_MIN_CONF", 50),
+        min_agreement     = _get_int  ("CRITICAL_MIN_AGREEMENT", 2),
         time_stop_s       = _get_int  ("CRITICAL_TIME_STOP_S", 300),
         no_trade_open_min = _get_int  ("CRITICAL_NO_TRADE_OPEN_MIN", 15),
         no_trade_close_min= _get_int  ("CRITICAL_NO_TRADE_CLOSE_MIN", 30),
         max_spread_pct    = _get_float("CRITICAL_MAX_SPREAD_PCT", 4.0),
+        wall_break_hysteresis_pts = _get_float(
+            "CRITICAL_WALL_BREAK_HYSTERESIS_PTS", 5.0,
+        ),
         anthropic_model   = _get_str  ("CRITICAL_ANTHROPIC_MODEL",
                                         "claude-haiku-4-5-20251001"),
         anthropic_api_key = _get_str  ("ANTHROPIC_API_KEY", ""),
