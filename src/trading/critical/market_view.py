@@ -77,6 +77,12 @@ class MarketView:
         ingest pipeline hasn't populated it yet."""
         return self._store.get_vix()
 
+    def get_vix_change_pct_1h(self) -> float | None:
+        """Percent change in India VIX vs 1h ago. None if history is
+        shallower than 1h. Feeds the expiry/trend gate: sharp drops
+        punish PE buyers on vega, sharp spikes raise uncertainty."""
+        return self._store.vix_change_pct_1h()
+
     def get_chain_snapshot(
         self, index: str, expiry_iso: str,
     ) -> list[ChainRow]:

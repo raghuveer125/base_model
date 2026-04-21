@@ -119,6 +119,12 @@ class CriticalConfig:
     # primary support or resistance. Tighter on expiry day (gamma crunch).
     wall_proximity_veto_pct: float
     expiry_wall_proximity_veto_pct: float
+    # VIX-trend gate (applies always, not just expiry). Sharp VIX drops
+    # punish option BUYERS on vega, so we either veto PEs (the side most
+    # commonly bought against drop) or raise the confidence bar.
+    vix_drop_pe_veto_pct: float     # if ΔVIX_1h ≤ this (negative), veto PE entries
+    vix_spike_conf_bump: int        # if ΔVIX_1h ≥ vix_spike_pct, add this to min_conf
+    vix_spike_pct: float
     anthropic_model: str
     anthropic_api_key: str
 
@@ -166,6 +172,12 @@ def load_config() -> CriticalConfig:
         expiry_wall_proximity_veto_pct = _get_float(
             "CRITICAL_EXPIRY_WALL_PROXIMITY_VETO_PCT", 0.10,
         ),
+        # VIX-trend gate defaults: -4.5% trigger for PE veto (daily VIX
+        # swings up to ~4% are normal, 4.5% signals structural drop),
+        # +5% for the spike uncertainty bump, +10 conf points.
+        vix_drop_pe_veto_pct = _get_float("CRITICAL_VIX_DROP_PE_VETO_PCT", -4.5),
+        vix_spike_conf_bump  = _get_int  ("CRITICAL_VIX_SPIKE_CONF_BUMP", 10),
+        vix_spike_pct        = _get_float("CRITICAL_VIX_SPIKE_PCT", 5.0),
         anthropic_model   = _get_str  ("CRITICAL_ANTHROPIC_MODEL",
                                         "claude-haiku-4-5-20251001"),
         anthropic_api_key = _get_str  ("ANTHROPIC_API_KEY", ""),

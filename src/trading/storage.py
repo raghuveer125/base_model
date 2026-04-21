@@ -69,13 +69,22 @@ class LiveStore:
         return float(raw) if raw is not None else None
 
     def set_vix(self, ltp: float, ts_ms: int | None = None) -> None:
-        """Store the latest India VIX scalar. Separate from index ticks
-        because VIX doesn't carry option chain / greeks / candle closers.
+        """Store the latest India VIX scalar + append to a rolling 1h
+        history zset keyed by ts. History is pruned on write so the
+        zset stays bounded even on long-running ingest sessions.
         """
         pipe = self.r.pipeline(transaction=False)
         pipe.set("tpp:vix", float(ltp))
         if ts_ms is not None:
             pipe.set("tpp:vix_ts_ms", int(ts_ms))
+            # History zset: score = ts_ms, member = "ts_ms:ltp" so each
+            # sample is unique (two ticks in the same ms don't collide).
+            member = f"{int(ts_ms)}:{float(ltp)}"
+            pipe.zadd("tpp:vix_history", {member: int(ts_ms)})
+            # Keep only the last 70 min (10 min buffer beyond the 1h
+            # comparison window) — prevents unbounded growth.
+            cutoff = int(ts_ms) - 70 * 60 * 1000
+            pipe.zremrangebyscore("tpp:vix_history", 0, cutoff)
         pipe.execute()
 
     def get_vix(self) -> float | None:
@@ -85,6 +94,37 @@ class LiveStore:
     def vix_ts_ms(self) -> int | None:
         raw = self.r.get("tpp:vix_ts_ms")
         return int(raw) if raw is not None else None
+
+    def vix_change_pct_1h(self, now_ms: int | None = None) -> float | None:
+        """Percent change in India VIX over the last hour, or None if the
+        history doesn't yet span that window.
+
+        Used by the expiry/trend gate: a rapid drop (e.g. ≤ -4.5%) signals
+        collapsing implied vol — buying PEs in that environment loses on
+        vol even if direction works.
+        """
+        import time as _time
+        if now_ms is None:
+            now_ms = int(_time.time() * 1000)
+        one_hour_ago = now_ms - 60 * 60 * 1000
+        # Oldest sample within the last 60 minutes.
+        hist = self.r.zrangebyscore(
+            "tpp:vix_history", one_hour_ago, now_ms, start=0, num=1,
+        )
+        if not hist:
+            return None
+        try:
+            member = hist[0].decode() if isinstance(hist[0], bytes) else hist[0]
+            _, baseline_ltp_s = member.split(":", 1)
+            baseline = float(baseline_ltp_s)
+        except (ValueError, TypeError):
+            return None
+        if baseline <= 0:
+            return None
+        current = self.get_vix()
+        if current is None:
+            return None
+        return (current - baseline) / baseline * 100.0
 
     def last_seen_ms(self, index: str) -> int | None:
         raw = self.r.get(f"tpp:last_seen:{index}")

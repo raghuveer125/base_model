@@ -459,14 +459,31 @@ class CriticalEngine:
             # Regime bias vetoed the only side that had agreement.
             self._gate_tick(index, f"regime_vetoed_side:{pre_check.side}")
             return
+
+        # VIX-trend gate — operates on ALL indices (VIX is India-wide).
+        # Collapsing vol penalises option BUYERS on vega; we buy options
+        # so we veto the most-bought-on-drop side (PE). Spikes raise the
+        # confidence bar on both sides to filter noise.
+        vix_chg = self.market.get_vix_change_pct_1h()
+        min_conf = params.min_regime_conf
+        if vix_chg is not None:
+            if final.side == "PE" and vix_chg <= self.cfg.vix_drop_pe_veto_pct:
+                self._gate_tick(
+                    index, f"vix_drop_pe_veto:{vix_chg:+.1f}pct",
+                )
+                return
+            if vix_chg >= self.cfg.vix_spike_pct:
+                min_conf = min(100, min_conf + self.cfg.vix_spike_conf_bump)
+
         if not regime_allow(regime, final.side,
-                             min_confidence=params.min_regime_conf):
+                             min_confidence=min_conf):
             log.info("critical_entry_blocked_by_regime",
                      index=index, side=final.side,
                      regime=regime.regime, bias=regime.bias,
                      confidence=regime.confidence,
-                     min_required=params.min_regime_conf,
-                     expiry_mode=params.is_expiry)
+                     min_required=min_conf,
+                     expiry_mode=params.is_expiry,
+                     vix_chg_1h=vix_chg)
             self._gate_tick(
                 index,
                 f"regime_allow_block:{regime.regime}:{regime.bias}:conf{regime.confidence}",
@@ -667,6 +684,9 @@ class CriticalEngine:
         # SENSEX, pass None so the prompt doesn't render a NIFTY-derived
         # number as if it were their volatility.
         vix = self.market.get_vix() if index == "NIFTY50" else None
+        vix_chg = (
+            self.market.get_vix_change_pct_1h() if index == "NIFTY50" else None
+        )
         return RegimeInput(
             index=index, spot=float(spot),
             recent_candles=recent, recent_ltps=recent_ltps,
@@ -676,6 +696,7 @@ class CriticalEngine:
             highest_call_oi_strike=hi_ce,
             highest_put_oi_strike=hi_pe,
             india_vix=vix,
+            india_vix_change_pct_1h=vix_chg,
             atm_iv_ce=atm_iv_ce,
             atm_iv_pe=atm_iv_pe,
             feedback=self._session_feedback(index),

@@ -127,6 +127,10 @@ class RegimeInput:
     # NIFTY ATM options). Intentionally None for BANKNIFTY / SENSEX so we
     # don't cross-pollute their prompt with NIFTY-specific volatility.
     india_vix: float | None = None
+    # 1h change in India VIX (pct). Same NIFTY-scope rule: only
+    # populated for NIFTY50 calls. Helps Claude identify vol regime
+    # shifts that a single-point VIX level can't convey.
+    india_vix_change_pct_1h: float | None = None
     # Per-index ATM option IV — each index's OWN volatility gauge. CE and
     # PE are kept separate because IV skew (PE_iv - CE_iv) is meaningful.
     atm_iv_ce: float | None = None
@@ -174,7 +178,10 @@ def _render_volatility(snap: RegimeInput) -> str:
     """
     lines: list[str] = []
     if snap.india_vix is not None:
-        lines.append(f"India VIX: {snap.india_vix:.2f}")
+        vix_line = f"India VIX: {snap.india_vix:.2f}"
+        if snap.india_vix_change_pct_1h is not None:
+            vix_line += f"  (Δ1h: {snap.india_vix_change_pct_1h:+.2f}%)"
+        lines.append(vix_line)
     if snap.atm_iv_ce is not None or snap.atm_iv_pe is not None:
         ce_pct = _iv_to_pct(snap.atm_iv_ce)
         pe_pct = _iv_to_pct(snap.atm_iv_pe)
