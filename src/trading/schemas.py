@@ -45,6 +45,11 @@ INDEX_OPTION_ROOT: dict[str, str] = {
     Index.SENSEX.value: "SENSEX",
 }
 
+# NSE / BSE index-options minimum price tick in rupees. All fills and
+# price-level triggers (target, stop) must land on this grid; otherwise
+# the paper engine drifts away from what the real order book would show.
+OPTION_TICK_SIZE: float = 0.05
+
 
 OptionType = Literal["CE", "PE"]
 

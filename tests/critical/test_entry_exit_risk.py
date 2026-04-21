@@ -171,6 +171,36 @@ def test_build_exit_levels_has_min_stop_floor():
     assert stop == 0.0    # clamped at zero
 
 
+def test_build_exit_levels_snaps_target_and_stop_to_tick():
+    # Entry on a messy price — target/stop must land on ₹0.05 grid.
+    # Stop floors (wider safety zone), target ceils (conservative take-profit).
+    target, stop, _ = build_exit_levels(
+        entry_ltp=666.57, spread=1.0, max_loss_rupees=1500,
+        lots=2, lot_size=20, time_stop_s=300, now_ms=0,
+    )
+    # Raw stop_buffer = max(5, 1500/40=37.5) = 37.5 → raw stop = 629.07 → floor = 629.05
+    # Raw target = 666.57 + 1.5 * 37.5 = 722.82 → ceil = 722.85
+    assert stop == 629.05
+    assert target == 722.85
+    # Grid invariant — must be an exact multiple of 0.05
+    assert abs(stop / 0.05 - round(stop / 0.05)) < 1e-6
+    assert abs(target / 0.05 - round(target / 0.05)) < 1e-6
+
+
+def test_build_exit_levels_preserves_min_stop_buffer_after_snap():
+    # When rupee-cap buffer is just above 5.0 points, flooring the stop
+    # must NOT pull the buffer below the min-stop floor of 5.0 points.
+    target, stop, _ = build_exit_levels(
+        entry_ltp=120.03, spread=0.0, max_loss_rupees=765,
+        lots=1, lot_size=150, time_stop_s=300, now_ms=0,
+    )
+    # rupee_cap_buffer = 765/150 = 5.1; stop_buffer = max(5, 5.1) = 5.1
+    # raw stop = 120.03 - 5.1 = 114.93 → floor = 114.90
+    # buffer after snap = 120.03 - 114.90 = 5.13 >= 5.0 ✓
+    assert (120.03 - stop) >= 5.0
+    assert stop == 114.90
+
+
 # ----- within entry window -----
 
 def test_within_entry_window_rejects_preopen_and_postclose():

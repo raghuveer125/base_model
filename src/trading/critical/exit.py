@@ -13,10 +13,12 @@ Pure function — takes numbers, returns a decision.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Literal
 
 from trading.critical.state import Position
+from trading.schemas import OPTION_TICK_SIZE
 
 ExitReason = Literal[
     "stop", "dollar_stop", "time", "target", "regime_flip", "wall_break",
@@ -142,5 +144,13 @@ def build_exit_levels(
     base = max((spread or 0.0), stop_buffer)
     target_ltp = entry_ltp + target_multiple * base
 
+    # Snap onto the ₹0.05 option tick grid so stops/targets match what a
+    # real order book would trigger on. Direction is chosen conservatively:
+    # floor the stop (wider safety buffer, fires later) and ceil the target
+    # (harder to hit, slightly lower realized profit). This preserves the
+    # `stop_buffer >= min_stop_points` invariant — flooring only widens.
+    stop_ltp = math.floor(stop_ltp / OPTION_TICK_SIZE) * OPTION_TICK_SIZE
+    target_ltp = math.ceil(target_ltp / OPTION_TICK_SIZE) * OPTION_TICK_SIZE
+
     time_stop_ms = now_ms + time_stop_s * 1000
-    return target_ltp, stop_ltp, time_stop_ms
+    return round(target_ltp, 2), round(stop_ltp, 2), time_stop_ms

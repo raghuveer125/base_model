@@ -62,6 +62,37 @@ def test_paper_sell_subtracts_slippage():
     assert r.fill.side == "S"
 
 
+def test_paper_buy_snaps_up_to_tick():
+    # Post-slippage 666.5659 → must land on next 0.05 grid point (666.60),
+    # not 666.5659 or rounded-4dp 666.5659. BUY direction ceils (worse fill).
+    ex = PaperExecutor(slippage_bps=0.0, fee_bps=0.0, flat_fee=0.0)
+    r = ex.execute(_order("BUY", qty=1, ref=666.5659))
+    assert r.ok and r.fill is not None
+    assert r.fill.fill_price == 666.60
+
+
+def test_paper_sell_snaps_down_to_tick():
+    # Post-slippage 807.5067 → must land on prev 0.05 grid point (807.50).
+    # SELL direction floors (worse fill).
+    ex = PaperExecutor(slippage_bps=0.0, fee_bps=0.0, flat_fee=0.0)
+    r = ex.execute(_order("SELL", qty=1, ref=807.5067))
+    assert r.ok and r.fill is not None
+    assert r.fill.fill_price == 807.50
+
+
+def test_paper_fills_always_on_tick_grid():
+    # Every combination of side × slippage should produce a multiple of 0.05.
+    for side in ("BUY", "SELL"):
+        for ref in (84.9348, 120.5, 666.5659, 807.5067, 24.4):
+            ex = PaperExecutor(slippage_bps=30.0, fee_bps=0.0, flat_fee=0.0)
+            r = ex.execute(_order(side, qty=1, ref=ref))
+            assert r.ok and r.fill is not None
+            n_ticks = r.fill.fill_price / 0.05
+            assert abs(n_ticks - round(n_ticks)) < 1e-6, (
+                f"{side} fill {r.fill.fill_price} (ref={ref}) is off-grid"
+            )
+
+
 def test_paper_rejects_bad_ref_price():
     ex = PaperExecutor()
     r = ex.execute(_order("BUY", ref=0.0))
