@@ -565,25 +565,42 @@ class CriticalEngine:
                 elif ev.get("kind") == "exit":
                     entries.pop(key, None)
                     exits.append(ev)
-            if not exits:
+            # Synthetic reconcile exits (pnl=0, reason=reconciled_on_startup)
+            # are operational noise from restarts, not real outcomes. Strip
+            # them before computing hit-rate or reason clustering — Claude
+            # needs to see what the MARKET did, not what our deploys did.
+            real_exits = [
+                e for e in exits
+                if e.get("source") != "reconcile"
+                and not str(e.get("reason") or "").startswith("reconciled")
+            ]
+            if not real_exits:
                 return SessionFeedback(trades_today=len(entries))
-            wins = sum(1 for e in exits if float(e.get("pnl") or 0) > 0)
-            hit = wins / len(exits)
-            reasons: dict[str, int] = {}
-            for e in exits:
+            wins = sum(1 for e in real_exits if float(e.get("pnl") or 0) > 0)
+            # Full-day hit-rate (stable, lower variance — use for conviction
+            # sizing per the expert review).
+            hit = wins / len(real_exits)
+            # Reason clustering uses the LAST 5 real exits only — a rolling
+            # tie-breaker Claude can use to detect recent regime drift
+            # without overweighting the rolling hit-rate.
+            recent_reasons: dict[str, int] = {}
+            for e in real_exits[-5:]:
                 tag = str(e.get("reason") or "unknown").split(":", 1)[0].strip()
-                reasons[tag] = reasons.get(tag, 0) + 1
-            dominant = max(reasons, key=reasons.get) if reasons else None
+                recent_reasons[tag] = recent_reasons.get(tag, 0) + 1
+            dominant = (
+                max(recent_reasons, key=recent_reasons.get)
+                if recent_reasons else None
+            )
             last_3 = tuple(
                 f"{index} {e.get('strike')}{e.get('side')} exited via "
                 f"{str(e.get('reason') or '').split(':', 1)[0].strip()} "
                 f"{float(e.get('pnl') or 0):+.0f}"
-                for e in exits[-3:]
+                for e in real_exits[-3:]
             )
             return SessionFeedback(
                 dominant_exit_reason=dominant,
                 hit_rate=hit,
-                trades_today=len(exits) + len(entries),
+                trades_today=len(real_exits) + len(entries),
                 last_3=last_3,
             )
         except Exception as e:   # noqa: BLE001
