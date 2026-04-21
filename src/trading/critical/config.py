@@ -107,6 +107,18 @@ class CriticalConfig:
     max_spread_pct: float
     wall_break_hysteresis_pts: float
     max_tick_age_s: int
+    # Expiry-day overrides — auto-applied per-index when today is the
+    # expiry date for that index (NIFTY50/SENSEX weeklies, BANKNIFTY
+    # monthly last-Tue). Normal defaults apply on other days.
+    expiry_time_stop_s: int
+    expiry_target_multiple: float
+    expiry_min_regime_conf: int
+    expiry_delta_min: float
+    expiry_delta_max: float
+    # Wall-proximity veto: reject an entry if spot is within N% of either
+    # primary support or resistance. Tighter on expiry day (gamma crunch).
+    wall_proximity_veto_pct: float
+    expiry_wall_proximity_veto_pct: float
     anthropic_model: str
     anthropic_api_key: str
 
@@ -137,6 +149,23 @@ def load_config() -> CriticalConfig:
             "CRITICAL_WALL_BREAK_HYSTERESIS_PTS", 5.0,
         ),
         max_tick_age_s    = _get_int  ("CRITICAL_MAX_TICK_AGE_S", 60),
+        # Expiry-day overrides. Defaults picked after veteran-scalper
+        # review (2026-04-21): move-or-get-out 120s, keep delta slightly
+        # below [0.55,0.65] (avoid pure gamma), conf bar at 65, 1:1.2 R:R.
+        expiry_time_stop_s       = _get_int  ("CRITICAL_EXPIRY_TIME_STOP_S", 120),
+        expiry_target_multiple   = _get_float("CRITICAL_EXPIRY_TARGET_MULT", 1.2),
+        expiry_min_regime_conf   = _get_int  ("CRITICAL_EXPIRY_MIN_REGIME_CONF", 65),
+        expiry_delta_min         = _get_float("CRITICAL_EXPIRY_DELTA_MIN", 0.40),
+        expiry_delta_max         = _get_float("CRITICAL_EXPIRY_DELTA_MAX", 0.55),
+        # Wall-proximity veto. Normal-day default 0 (off) so existing
+        # behaviour is unchanged unless the operator enables it. On
+        # expiry, 0.10% is a ~25-pt NIFTY cushion — tight enough to
+        # block the 'entered next to the wall' pattern that burned the
+        # 24550 PE at 10:52:50 today.
+        wall_proximity_veto_pct  = _get_float("CRITICAL_WALL_PROXIMITY_VETO_PCT", 0.0),
+        expiry_wall_proximity_veto_pct = _get_float(
+            "CRITICAL_EXPIRY_WALL_PROXIMITY_VETO_PCT", 0.10,
+        ),
         anthropic_model   = _get_str  ("CRITICAL_ANTHROPIC_MODEL",
                                         "claude-haiku-4-5-20251001"),
         anthropic_api_key = _get_str  ("ANTHROPIC_API_KEY", ""),

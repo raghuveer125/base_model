@@ -32,8 +32,12 @@ from __future__ import annotations
 import signal
 import threading
 import time
+from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
+
+_IST = ZoneInfo("Asia/Kolkata")
 
 from trading.critical.config import CriticalConfig, load_config
 from trading.critical.entry import pick_instrument
@@ -56,6 +60,19 @@ from trading.logging_setup import get_logger
 from trading.schemas import now_ms
 
 log = get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class EffectiveParams:
+    """Resolved per-tick parameter set — either normal-day defaults or
+    expiry-mode overrides. Frozen so it's safe to pass around."""
+    time_stop_s: int
+    target_multiple: float
+    min_regime_conf: int
+    delta_min: float
+    delta_max: float
+    wall_proximity_veto_pct: float
+    is_expiry: bool
 
 
 class CriticalEngine:
@@ -90,6 +107,65 @@ class CriticalEngine:
         # `tpp:critical:gate_stats:{INDEX}:{stage}`.
         self._gate_counts: dict[tuple[str, str], int] = {}
         self._gate_last_flush_ms: int = 0
+
+    @staticmethod
+    def _near_wall(
+        spot: float,
+        primary_resistance: int | None,
+        primary_support: int | None,
+        tolerance_pct: float,
+    ) -> bool:
+        """True if spot sits within `tolerance_pct`% of either the
+        primary resistance or primary support wall. Intended to veto
+        entries fired *at* a wall — those trades tend to get rejected
+        by the level and die to theta before any breakout confirms."""
+        if spot is None or spot <= 0 or tolerance_pct <= 0:
+            return False
+        band = spot * (tolerance_pct / 100.0)
+        if primary_resistance is not None and abs(spot - primary_resistance) <= band:
+            return True
+        if primary_support is not None and abs(spot - primary_support) <= band:
+            return True
+        return False
+
+    # ---- expiry-mode detection ----
+
+    def _is_expiry_day(self, index: str) -> bool:
+        """True if today (IST) is the expiry date for this index. Used
+        to tighten time-stop / R:R / delta window / regime-conf for
+        intraday scalps into a gamma-crunch day. Per-index: NIFTY50 can
+        be in expiry mode while BANKNIFTY / SENSEX run normal config.
+        """
+        exp = self._expiries.get(index)
+        if exp is None:
+            return False
+        return datetime.now(_IST).date() == exp
+
+    def _effective_params(self, index: str) -> "EffectiveParams":
+        """Resolve the config params that apply to this index RIGHT NOW
+        — swaps expiry-mode overrides in on the index's expiry day.
+        Single code path ensures every gate in `_try_entry` and every
+        call to `build_exit_levels` sees consistent values.
+        """
+        if self._is_expiry_day(index):
+            return EffectiveParams(
+                time_stop_s=self.cfg.expiry_time_stop_s,
+                target_multiple=self.cfg.expiry_target_multiple,
+                min_regime_conf=self.cfg.expiry_min_regime_conf,
+                delta_min=self.cfg.expiry_delta_min,
+                delta_max=self.cfg.expiry_delta_max,
+                wall_proximity_veto_pct=self.cfg.expiry_wall_proximity_veto_pct,
+                is_expiry=True,
+            )
+        return EffectiveParams(
+            time_stop_s=self.cfg.time_stop_s,
+            target_multiple=1.5,   # normal-day default in build_exit_levels
+            min_regime_conf=self.cfg.regime_min_confidence,
+            delta_min=self.cfg.delta_min,
+            delta_max=self.cfg.delta_max,
+            wall_proximity_veto_pct=self.cfg.wall_proximity_veto_pct,
+            is_expiry=False,
+        )
 
     # ---- lifecycle ----
 
@@ -263,6 +339,7 @@ class CriticalEngine:
             self._debug_entry(index, "no_lots_config")
             self._gate_tick(index, "no_lots_config")
             return
+        params = self._effective_params(index)
         gate = risk_gate(
             self.state, index, ts_ms=now_ms(),
             max_concurrent=self.cfg.max_concurrent,
@@ -383,27 +460,46 @@ class CriticalEngine:
             self._gate_tick(index, f"regime_vetoed_side:{pre_check.side}")
             return
         if not regime_allow(regime, final.side,
-                             min_confidence=self.cfg.regime_min_confidence):
+                             min_confidence=params.min_regime_conf):
             log.info("critical_entry_blocked_by_regime",
                      index=index, side=final.side,
                      regime=regime.regime, bias=regime.bias,
                      confidence=regime.confidence,
-                     min_required=self.cfg.regime_min_confidence)
+                     min_required=params.min_regime_conf,
+                     expiry_mode=params.is_expiry)
             self._gate_tick(
                 index,
                 f"regime_allow_block:{regime.regime}:{regime.bias}:conf{regime.confidence}",
             )
             return
 
-        # Pick an ITM contract in the configured delta window
+        # Wall-proximity veto: spot too close to primary S/R → skip.
+        # Prevents the 2026-04-21 10:52 pattern where we entered a PE
+        # just above a PE-support wall that then held.
+        if params.wall_proximity_veto_pct > 0 and self._near_wall(
+            spot, levels.primary_resistance, levels.primary_support,
+            params.wall_proximity_veto_pct,
+        ):
+            self._gate_tick(index, f"near_wall_veto:{final.side}")
+            return
+
+        # Pick a contract in the effective delta window.
         cand = pick_instrument(
             rows, spot, final.side,
-            delta_min=self.cfg.delta_min,
-            delta_max=self.cfg.delta_max,
+            delta_min=params.delta_min,
+            delta_max=params.delta_max,
             max_spread_pct=self.cfg.max_spread_pct,
         )
         if cand is None:
             self._gate_tick(index, "pick_none")
+            return
+
+        # Straddle veto: if we already hold a position on the SAME strike
+        # (other leg), refuse the opposite-side entry — blocks accidental
+        # delta-neutral straddles the engine wasn't designed to manage.
+        held = idx_state.position
+        if held is not None and held.strike == cand.strike and held.option_type != cand.side:
+            self._gate_tick(index, "straddle_veto")
             return
 
         lots = self.cfg.lots_per_index[index]
@@ -413,7 +509,8 @@ class CriticalEngine:
             spread=None,  # spread already enforced via max_spread_pct gate
             max_loss_rupees=self.cfg.max_loss_rupees,
             lots=lots, lot_size=lot_size,
-            time_stop_s=self.cfg.time_stop_s, now_ms=now_ms(),
+            time_stop_s=params.time_stop_s, now_ms=now_ms(),
+            target_multiple=params.target_multiple,
         )
         outcome = self.executor.enter(
             index=index, expiry_d=expiry, cand=cand, signal=final,
