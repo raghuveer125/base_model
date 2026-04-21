@@ -11,6 +11,7 @@ import time
 
 from trading.config import get_settings
 from trading.critical.engine import CriticalEngine, install_signal_handlers
+from trading.critical.reconcile import reconcile_orphan_entries
 from trading.critical.validator import Validator
 from trading.logging_setup import configure_logging, get_logger
 from trading.storage import get_redis
@@ -22,6 +23,15 @@ def main() -> None:
     try:
         get_redis().ping()
         indices = get_settings().index_list
+        # Close out any entries from a prior run that didn't get an exit
+        # event (process killed mid-position). Writes synthetic exits to
+        # trades.jsonl so the audit log is honest and the UI stops
+        # showing phantom "open" rows. Runs BEFORE the engine starts, so
+        # no race with live entries.
+        closed = reconcile_orphan_entries()
+        if closed:
+            log.info("critical_startup_reconciled",
+                     orphans_closed=len(closed))
         eng = CriticalEngine(indices=indices)
         validator = Validator(indices)
         install_signal_handlers(eng)
