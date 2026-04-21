@@ -239,6 +239,13 @@ def _snapshot_processes() -> list[ProcInfo]:
     # Lazy import so `scan` / test paths don't need psutil installed.
     import psutil
     procs: list[ProcInfo] = []
+    # Match longest module strings first so `trading.critical.vigilante`
+    # wins over `trading.critical` (which is a substring of it). Without
+    # this, every vigilante process gets mis-tagged as a `trading.critical`
+    # collision — which is exactly what happened on 2026-04-21.
+    modules_by_specificity = sorted(
+        MANAGED_MODULES, key=len, reverse=True,
+    )
     # First pass: collect all python procs for parent-lookup.
     matching: dict[int, tuple[str, str, float]] = {}
     for p in psutil.process_iter(["pid", "name", "cmdline", "create_time"]):
@@ -248,8 +255,12 @@ def _snapshot_processes() -> list[ProcInfo]:
             if "python" not in name:
                 continue
             cmd = " ".join(info.get("cmdline") or [])
+            # Require the module to appear as a full `-m <module>` token,
+            # not a bare substring, so similar-named modules don't collide.
             matched = next(
-                (m for m in MANAGED_MODULES if m in cmd), None,
+                (m for m in modules_by_specificity
+                 if f"-m {m} " in cmd + " " or cmd.endswith(f"-m {m}")),
+                None,
             )
             if not matched:
                 continue

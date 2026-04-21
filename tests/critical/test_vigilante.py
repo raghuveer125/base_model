@@ -142,6 +142,24 @@ def test_collisions_ignores_near_simultaneous_pair():
     crit = next(r for r in reports if r.module == "trading.critical")
     assert not crit.collided
 
+def test_collisions_dont_cross_trading_critical_and_vigilante():
+    # Regression guard for the bug seen on 2026-04-21: a vigilante
+    # process was being tagged as `trading.critical` because
+    # "trading.critical" is a substring of "trading.critical.vigilante".
+    # With the longest-first specificity sort, each module's group
+    # should contain only its own processes.
+    procs = [
+        ProcInfo(pid=100, module="trading.critical",
+                 create_time=1000.0, is_launcher=True),
+        ProcInfo(pid=200, module="trading.critical.vigilante",
+                 create_time=1300.0, is_launcher=True),
+    ]
+    reports = detect_collisions(procs, min_delta_s=5.0)
+    critical_r = next(r for r in reports if r.module == "trading.critical")
+    vig_r = next(r for r in reports if r.module == "trading.critical.vigilante")
+    assert critical_r.launcher_pids == (100,) and not critical_r.collided
+    assert vig_r.launcher_pids == (200,) and not vig_r.collided
+
 
 # ────────────────────────────────────────────────────────────────────────
 # verify_prompt_shape

@@ -26,6 +26,7 @@ MANAGED_MODULES: tuple[str, ...] = (
     "trading.scripts.run_strategies",
     "trading.scripts.run_orders",
     "trading.critical",
+    "trading.critical.vigilante",
     "trading.scripts.run_ui",
 )
 
