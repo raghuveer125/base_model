@@ -7,6 +7,7 @@ base model later restricts any of these, a single place to adapt.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -49,8 +50,22 @@ class Candle:
 class MarketView:
     """Thin read-only aggregator — no caching (each call hits Redis/PG)."""
 
-    def __init__(self, store: LiveStore | None = None) -> None:
+    def __init__(
+        self,
+        store: LiveStore | None = None,
+        *,
+        max_tick_age_ms: int | None = 60_000,
+    ) -> None:
+        """`max_tick_age_ms` sets the staleness threshold for per-leg
+        tick data returned by `get_chain_snapshot`. A leg whose
+        `ts_received` (or `ts_exchange`) is older than this window is
+        treated as absent (`ce_tick=None` / `pe_tick=None`) so the entry
+        picker can't act on zombie data lingering in Redis from a prior
+        session or an out-of-window strike that stopped ticking.
+
+        Pass `None` to disable the filter (tests use this)."""
         self._store = store or LiveStore()
+        self._max_tick_age_ms = max_tick_age_ms
 
     # ---------- live spot + chain ----------
 
@@ -65,9 +80,18 @@ class MarketView:
     def get_chain_snapshot(
         self, index: str, expiry_iso: str,
     ) -> list[ChainRow]:
-        """Assemble the full chain for an expiry, strikes sorted ascending."""
+        """Assemble the full chain for an expiry, strikes sorted ascending.
+
+        Per-leg tick freshness gate: a tick with `ts_received` /
+        `ts_exchange` older than `max_tick_age_ms` is dropped. This stops
+        the entry picker from selecting a stale Redis key with an
+        unrealistic (out-of-date) LTP — the pattern that produced
+        duplicate "NIFTY50 25000 CE @ 120.50" entries on 2026-04-21
+        when today's real price was ₹0.45.
+        """
         spot = self.get_spot(index)
         raw = self._store.get_chain(index, expiry_iso)
+        now_ms = int(time.time() * 1000)
         by_strike: dict[int, dict[str, tuple[dict, dict | None]]] = {}
         for field_key, tick in raw.items():
             try:
@@ -76,6 +100,8 @@ class MarketView:
             except ValueError:
                 continue
             if ot not in ("CE", "PE"):
+                continue
+            if not self._is_tick_fresh(tick, now_ms):
                 continue
             greeks = self._store.get_greeks(index, expiry_iso, strike, ot)
             by_strike.setdefault(strike, {})[ot] = (tick, greeks)
@@ -95,6 +121,17 @@ class MarketView:
                 ce_metrics=ce_metrics, pe_metrics=pe_metrics,
             ))
         return rows
+
+    def _is_tick_fresh(self, tick: dict, now_ms: int) -> bool:
+        """Return True if the tick has a usable timestamp within the
+        freshness window. Missing timestamps → treat as fresh (can't
+        decide — preserve v1 behaviour)."""
+        if self._max_tick_age_ms is None:
+            return True
+        ts = tick.get("ts_received") or tick.get("ts_exchange")
+        if not isinstance(ts, (int, float)) or ts <= 0:
+            return True
+        return (now_ms - int(ts)) <= self._max_tick_age_ms
 
     def get_oi_walls(
         self, index: str, expiry_iso: str, n: int = 3,

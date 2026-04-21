@@ -72,7 +72,9 @@ class CriticalEngine:
         self.indices = list(indices)
         self.cfg = cfg or load_config()
         self.bus = bus or EventBus()
-        self.market = market or MarketView()
+        self.market = market or MarketView(
+            max_tick_age_ms=self.cfg.max_tick_age_s * 1000,
+        )
         self.executor = executor or ScalpExecutor(bus=self.bus)
         self.regime = regime or RegimeClient(self.cfg)
         self.state = CriticalState()

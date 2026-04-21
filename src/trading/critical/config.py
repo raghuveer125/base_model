@@ -106,6 +106,7 @@ class CriticalConfig:
     no_trade_close_min: int
     max_spread_pct: float
     wall_break_hysteresis_pts: float
+    max_tick_age_s: int
     anthropic_model: str
     anthropic_api_key: str
 
@@ -135,6 +136,7 @@ def load_config() -> CriticalConfig:
         wall_break_hysteresis_pts = _get_float(
             "CRITICAL_WALL_BREAK_HYSTERESIS_PTS", 5.0,
         ),
+        max_tick_age_s    = _get_int  ("CRITICAL_MAX_TICK_AGE_S", 60),
         anthropic_model   = _get_str  ("CRITICAL_ANTHROPIC_MODEL",
                                         "claude-haiku-4-5-20251001"),
         anthropic_api_key = _get_str  ("ANTHROPIC_API_KEY", ""),
