@@ -22,9 +22,12 @@ from trading.critical.entry import EntryCandidate
 from trading.critical.state import Position
 from trading.critical.triggers import Signal
 from trading.events import EventBus
+from trading.logging_setup import get_logger
 from trading.orders.base import Fill, Order
 from trading.orders.paper import PaperExecutor
 from trading.schemas import FYERS_INDEX_SYMBOL, INDEX_OPTION_ROOT, now_ms
+
+log = get_logger(__name__)
 
 # Append-only JSONL that captures every entry/exit/rejection as it
 # happens. Read back by the UI to show a full trade table. Gitignored
@@ -174,6 +177,29 @@ class ScalpExecutor:
     def _publish_event(self, kind: ScalpEvent | str, index: str,
                         data: dict) -> None:
         payload = {"kind": kind, "ts": now_ms(), "index": index, **data}
+        # Zombie-clone tracer (2026-04-21): fingerprint of the persistent
+        # NIFTY50 25000 CE @ 120.50 phantom entry that keeps appearing
+        # despite Redis showing the real strike at ₹0.25-0.45. When the
+        # pattern tries to write, dump a stack + payload to a dedicated
+        # file — stderr goes to a minimised tpp-up window (invisible).
+        # Harmless for normal trading; fires only on exact fingerprint.
+        # Remove once root cause lands.
+        if (kind == "entry"
+                and index == "NIFTY50"
+                and data.get("strike") == 25000
+                and abs(float(data.get("entry_ltp") or 0) - 120.5) < 0.01):
+            try:
+                import traceback
+                from datetime import datetime as _dt
+                trace_path = _TRADES_JSONL.parent / "zombie_tracer.log"
+                trace_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(trace_path, "a", encoding="utf-8") as tf:
+                    tf.write(f"\n=== {_dt.now().isoformat()} ===\n")
+                    tf.write(f"payload: {payload}\n")
+                    tf.write(f"caller stack (last 8 frames):\n")
+                    tf.write("".join(traceback.format_stack()[-8:]))
+            except Exception:   # noqa: BLE001
+                pass
         # 1) live pub/sub for the UI's signal feed
         try:
             self._bus.publish(f"scalp.{index}", payload)
